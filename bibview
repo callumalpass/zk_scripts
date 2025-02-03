@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Set the user's home directory
+HOME="/home/calluma"
+
+# Function to display the key bindings and their actions
+show_key_bindings() {
+    (
+        echo -e "\033[36m"ctrl-space'  :'"\033[0m\033[3m""Open pdf in evince\033[0m"
+        echo -e "\033[36m"ctrl-z'  :'"\033[0m\033[3m""Open pdf in evince and abort\033[0m"
+        echo -e "\033[36m"ctrl-e'  :'"\033[0m\033[3m""Generate a zettel for bib entry, if none exists\033[0m"
+        echo -e "\033[36m"ctrl-v'  :'"\033[0m\033[3m""Open pdf in qpdfview in a right split\033[0m"
+        echo -e "\033[36m"ctrl-y'  :'"\033[0m\033[3m""Copy the citation key\033[0m"
+        echo -e "\033[36m"ctrl-f'  :'"\033[0m\033[3m""Open in nnn\033[0m"
+        echo -e "\033[36m"alt-n'  :'"\033[0m\033[3m""Next history\033[0m"
+        echo -e "\033[36m"alt-p'  :'"\033[0m\033[3m""Previous history\033[0m"
+        echo -e "\033[36m"alt-y'  :'"\033[0m\033[3m""Copy path of the pdf\033[0m"
+        echo -e "\033[36m"/'  :'"\033[0m\033[3m""Toggle preview\033[0m"
+        echo -e "\033[36m"ctrl-t'  :'"\033[0m\033[3m""Track reading of bibliographic entry\033[0m"
+    ) | sort | column -t -s ':' -N 'Key,Action'
+    exit 0
+}
+
+# Check if the key bindings should be displayed
+if [ "${_TASKFZF_SHOW}" = "keys" ]; then
+    show_key_bindings
+fi
+
+# Set the bibliography history file and library directory
+BIBHIST="$HOME/.cache/bibview.history"
+LIBRARY="/home/calluma/Dropbox/notes/biblib"
+
+# Source the default fzf options
+source ~/mybin/fzfDefaultOpts
+
+# Set the default editor
+export EDITOR="nvim"
+
+# Extract the bibliographic data based on the command-line argument
+if [[ $1 == "year" ]]; then
+    data=$(gojq -r '. | sort_by(.year) | reverse[] | [ (.issued?."date-parts"?[0][0])? , .id? , ([.author[]? // .editor[]? | .given? + " " + .family?] | join(", ")) , .title? , .type?, .abstract? ] | @tsv' ~/Dropbox/notes/biblib/bibliography.json)
+else
+    data=$(gojq -r '. | sort_by(.dateModified) | reverse[] | [ (.issued?."date-parts"?[0][0])? , .id? , ([.author[]? // .editor[]? | .given? + " " + .family?] | join(", ")) , .title? , .type?, .abstract? ] | @tsv' ~/Dropbox/notes/biblib/bibliography.json)
+fi
+
+# Process the bibliographic data and format it for fzf
+formatted_data=$(
+    awk -F'\t' 'BEGIN {OFS="|"}; {
+        if ($5=="chapter") icon="📖"
+        else if ($5=="book") icon="📕"
+        else if ($5=="article-journal") icon="📝"
+        else if ($5=="article-newspaper") icon="🗞"
+        else if ($5=="thesis") icon="🎓"
+        else icon="❓"
+        print"\033[36m\033[3"2"m"$2, "\033[0m""\033[0m"$1,icon, "\033[0m""\033[3m"substr($4, 1, 90), "\033[0m""\033[34m"$3"\033[0m", $6
+    }' <<< "$data" |
+    column -s '|' -t -N 'Citekey,Year, ,Title,Authors/Editors,Abstract'
+)
+
+# Launch fzf with customized options and key bindings
+fzf --ansi \
+    --multi \
+    --tiebreak begin,index \
+    --header-lines='1' \
+    --preview-window 'right:wrap:38%,<80(up)' \
+    --history="$HOME/.cache/bibview.history" \
+    --bind "alt-n:next-history" \
+    --bind "alt-p:previous-history" \
+    --bind "alt-b:execute[~/mybin/bibview.openDocument {1} obsidian ; timew start phd reading {1} ; echo {} >> $BIBHIST]+abort" \
+    --info inline \
+    --bind "/:toggle-preview" \
+    --bind "alt-g:execute[~/mybin/simonw-llm/venv/bin/llm -t humanist-reading-critique -a $LIBRARY/{1}/{1}.pdf -o json_object 1 > $LIBRARY/{1}/{1}.pdf_analysis.json ]" \
+    --bind "alt-t:execute[~/mybin/simonw-llm/venv/bin/llm -t translate_to_english -a $LIBRARY/{1}/{1}.pdf  > $LIBRARY/{1}/{1}.pdf_translation.md ]" \
+    --bind "Ctrl-a:execute[zk -W ~/Dropbox/notes list --format '{{path}} | {{title}} |{{tags}}' \`rg {1}  ~/Dropbox/notes -l || echo 'error'\` | ~/mybin/rgnotesearch ]" \
+    --bind "ctrl-f:execute[nnn $LIBRARY/{1}]" \
+    --bind "ctrl-r:execute[~/mybin/addToReadingList {1} ]" \
+    --bind "Ctrl-e:execute[nvim --server /tmp/obsidian.sock --remote  $LIBRARY/../@{1}.md]" \
+    --bind "alt-y:execute[echo \"$LIBRARY/{1}/{1}.pdf\" | tr -d \"'\" | wl-copy ]+abort" \
+    --bind "alt-z:execute[~/mybin/linkZathuraTmp {1}]" \
+    --bind "Ctrl-y:execute[echo {+1} | wl-copy ]+abort" \
+    --bind "Ctrl-t:execute[timew start phd reading {1}]+abort" \
+    --bind "Ctrl-space:execute[ ~/mybin/bibview.openDocument {1} evince ; timew start phd reading {1} ; echo {1} >> $BIBHIST]" \
+    --bind "Ctrl-z:execute[hyprctl dispatch exec  evince \" $LIBRARY/{1}/{1}.**\" ; timew start phd reading {1} ; echo {1} >> $BIBHIST]+abort" \
+    --bind "?:execute(env _TASKFZF_SHOW=keys $0 | fzf --ansi --header=Help --header-first --info=hidden --bind \"?:abort\")" \
+    --bind "Enter:execute[~/mybin/bibview.openDocument {1} obsidian ; timew start phd reading {1} ; echo {} >> $BIBHIST]+abort" \
+    --preview "ls --color=always -c -l -h $LIBRARY/{1}/; echo '\nCited in:'  ;  rg {1}  ~/Dropbox/notes -l --type markdown || echo 'error' ;  bat ~/Dropbox/notes/@{1}.md 2> /dev/null " \
+    <<< "$formatted_data"
+

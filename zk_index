@@ -1,0 +1,123 @@
+#!/bin/bash
+set -euo pipefail
+
+# Ensure variables.sh exists and load it.
+VARIABLES_FILE="$HOME/mybin/variables.sh"
+if [[ ! -f "$VARIABLES_FILE" ]]; then
+  echo "Error: $VARIABLES_FILE not found." >&2
+  exit 1
+fi
+source "$VARIABLES_FILE"
+if [[ -z "${NOTES_DIR:-}" ]]; then
+  echo "Error: NOTES_DIR is not defined." >&2
+  exit 1
+fi
+
+ZK="$NOTES_DIR"
+INDEX="$ZK/index.json"
+
+# Create a temporary file for the YAML index.
+yamltemp=$(mktemp)
+# trap 'rm -f "$yamltemp"' EXIT
+
+# Change to the notes directory.
+cd "$ZK"
+
+# Process Markdown files with fd and gawk.
+# For each file we:
+#  • deduce the filename (without the .md extension),
+#  • capture (optionally) YAML front matter and output it directly (without wrapping it
+#    inside a "front_matter" key),
+#  • scan for Obsidian wikilinks ([[target]] or [[target|display]]),
+#  • remove backslashes (if any) from the wikilink,
+#  • and output a YAML mapping with keys: filename, plus any keys from front matter, and outgoing_links.
+fd --strip-cwd-prefix --print0 --extension md -E templates/ -E .zk/ |
+xargs -0 gawk '
+  function quote(str) {
+    # Simple quoting function: escape any double quotes and wrap the string in quotes.
+    gsub(/"/, "\\\"", str);
+    return "\"" str "\""
+  }
+
+  BEGINFILE {
+    # Reset per-file state.
+    fname = FILENAME;
+    sub(/\.md$/, "", fname);
+    in_yaml = 0;
+    got_yaml = 0;
+    yaml_content = "";
+    link_count = 0;
+    delete links;
+  }
+
+  {
+    line = $0
+
+    # If the first line is the YAML front matter start marker.
+    if (FNR == 1 && line ~ /^---[[:space:]]*$/) {
+      in_yaml = 1;
+      got_yaml = 1;
+      next;
+    }
+    if (in_yaml) {
+      if (line ~ /^---[[:space:]]*$/) {
+        in_yaml = 0;
+        next;
+      }
+      # Accumulate front matter lines.
+      yaml_content = yaml_content line "\n";
+      next;
+    }
+
+    # Scan the current line for Obsidian-style wikilinks.
+    while (match(line, /\[\[([^|\]]+)(\|[^]]+)?\]\]/, arr)) {
+      link = arr[1];
+      # Remove any backslashes from the wikilink target.
+      gsub(/\\/, "", link);
+      # Avoid duplicate links.
+      dup = 0;
+      for (i = 1; i <= link_count; i++) {
+        if (links[i] == link) {
+          dup = 1;
+          break;
+        }
+      }
+      if (!dup) {
+        link_count++;
+        links[link_count] = link;
+      }
+      line = substr(line, RSTART + RLENGTH);
+    }
+  }
+
+  ENDFILE {
+    # Begin a new YAML document.
+    print "---";
+    print "filename: " quote(fname);
+
+    # Instead of wrapping front matter in a key, output it directly.
+    if (got_yaml) {
+      n = split(yaml_content, lines, "\n");
+      for (i = 1; i <= n; i++) {
+         if (length(lines[i]) > 0)
+            print lines[i];
+      }
+    }
+
+    if (link_count > 0) {
+      print "outgoing_links:";
+      for (i = 1; i <= link_count; i++) {
+         print "  - " quote(links[i]);
+      }
+    } else {
+      print "outgoing_links: []";
+    }
+  }
+' > "$yamltemp"
+
+# Optionally archive a YAML version for reference.
+# cp "$yamltemp" "$ZK/index.yaml"
+
+# Convert the YAML documents into a single JSON array.
+yq -o=json "$yamltemp" | jq -s '.' > "$INDEX"
+
