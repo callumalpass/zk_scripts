@@ -1,37 +1,26 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
 
-# Ensure variables.sh exists and load it.
-VARIABLES_FILE="$HOME/mybin/variables.sh"
-if [[ ! -f "$VARIABLES_FILE" ]]; then
-  echo "Error: $VARIABLES_FILE not found." >&2
-  exit 1
-fi
-source "$VARIABLES_FILE"
+CONFIG_FILE="/home/calluma/.config/zk_scripts/config.yaml"
+
+source /home/calluma/mybin/config_loader.sh
+
+load_config "$CONFIG_FILE" "zk_index" # Call load_config with config file and script section name
+
+
 if [[ -z "${NOTES_DIR:-}" ]]; then
-  echo "Error: NOTES_DIR is not defined." >&2
+  echo "Error: NOTES_DIR is not defined. Please configure in $CONFIG_FILE or set as environment variable." >&2
   exit 1
 fi
 
 ZK="$NOTES_DIR"
-INDEX="$ZK/index.json"
+INDEX="$INDEX_FILE" # Use configured INDEX_FILE
 
-# Create a temporary file for the YAML index.
 yamltemp=$(mktemp)
 # trap 'rm -f "$yamltemp"' EXIT
 
-# Change to the notes directory.
 cd "$ZK"
 
-# Process Markdown files with fd and gawk.
-# For each file we:
-#  • deduce the filename (without the .md extension),
-#  • capture (optionally) YAML front matter and output it directly (without wrapping it
-#    inside a "front_matter" key),
-#  • scan for Obsidian wikilinks ([[target]] or [[target|display]]),
-#  • remove backslashes (if any) from the wikilink,
-#  • and output a YAML mapping with keys: filename, plus any keys from front matter, and outgoing_links.
-fd --strip-cwd-prefix --print0 --extension md -E templates/ -E .zk/ |
+fd --strip-cwd-prefix --print0 --extension md $FD_EXCLUDE_PATTERNS --print0 -E templates/ -E .zk/ | \
 xargs -0 gawk '
   function quote(str) {
     # Simple quoting function: escape any double quotes and wrap the string in quotes.
@@ -116,8 +105,7 @@ xargs -0 gawk '
 ' > "$yamltemp"
 
 # Optionally archive a YAML version for reference.
-# cp "$yamltemp" "$ZK/index.yaml"
+# cp "$yamltemp" "$INDEX_YAML_FILE" # Use configured INDEX_YAML_FILE
 
-# Convert the YAML documents into a single JSON array.
 yq -o=json "$yamltemp" | jq -s '.' > "$INDEX"
 

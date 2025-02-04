@@ -13,7 +13,6 @@ New and Creative Features in this Edition:
   
 Enjoy this ULTIMATE, DO MOAR, REALLY GET CREATIVE version!
 """
-
 import os
 import re
 import time
@@ -25,43 +24,48 @@ import logging
 import logging.handlers
 import concurrent.futures
 from typing import List, Optional, Tuple
-import yaml  # Ensure pyyaml is installed
+import yaml
+
+CONFIG_FILE = os.path.expanduser("~/.config/zk_scripts/config.yaml")
 
 # --- Default Configuration ---
 DEFAULT_CONFIG = {
-    "THESIS_DIR": os.path.expanduser("~/Dropbox/notes"),
-    "POLL_INTERVAL": 2,               # seconds between file-change checks
-    "CONTEXT_LINES": 10,              # lines of context in preview
-    "STATUS_BAR_CLEAR_TIME": 3,       # seconds to show temporary status messages
+    "THESIS_DIR": os.path.expanduser(os.environ.get("NOTES_DIR", "~/Dropbox/notes")), # Env var or default, now using NOTES_DIR env var name
+    "POLL_INTERVAL": 2,
+    "CONTEXT_LINES": 10,
+    "STATUS_BAR_CLEAR_TIME": 3,
     "SEPARATOR_LINE_LENGTH": 80,
     "PREVIEW_SCROLL_LINES": 3,
-    "LOG_MAX_BYTES": 1024 * 1024,     # 1 MB per log file
+    "LOG_MAX_BYTES": 1024 * 1024,
     "LOG_BACKUP_COUNT": 5,
+    "CONFIG_PATH": os.path.expanduser(os.environ.get("POLL_BACKLINKS_CONFIG_PATH", "~/.config/py_zk/config.yaml")), # Configurable config path
+    "LOG_FILE": os.environ.get("POLL_BACKLINKS_LOG_FILE", "ultimate_backlinks.log"), # Configurable log file
 }
 
-CONFIG_PATH = os.path.expanduser("~/.config/py_zk/config.yaml")
-
-
-def load_shared_config(path: str = CONFIG_PATH) -> dict:
-    """Load shared configuration from YAML file and merge with defaults."""
+def load_config_yaml(config_file_path):
+    """Loads YAML config, merges with defaults, and applies env vars."""
     config = DEFAULT_CONFIG.copy()
-    if os.path.exists(path):
+    if os.path.exists(config_file_path):
         try:
-            with open(path, 'r') as f:
+            with open(config_file_path, 'r') as f:
                 user_config = yaml.safe_load(f) or {}
-            config.update(user_config)
+            config.update(user_config.get('poll_backlinks', {})) # Load only 'poll_backlinks' section and top-level config
+            config.update(user_config) # Also load top-level config for global settings like NOTES_DIR
         except Exception as e:
-            print(f"Warning: Could not load config file {path}: {e}", file=sys.stderr)
+            print(f"Warning: Could not load config file {config_file_path}: {e}", file=sys.stderr)
+
+    # Environment variables override config file and defaults
+    for key in DEFAULT_CONFIG:
+        env_var = os.environ.get(key)
+        if env_var:
+            config[key] = env_var
     return config
 
-
-# Load configuration early so that logging and other settings can use it.
-CONFIG = load_shared_config()
-
+CONFIG = load_config_yaml(CONFIG_FILE)
+LOG_FILE = CONFIG["LOG_FILE"] # Use configured log file
 
 
 # --- Logging Setup ---
-LOG_FILE = "ultimate_backlinks.log"
 logger = logging.getLogger("UltimateBacklinkViewer")
 logger.setLevel(logging.DEBUG)
 handler = logging.handlers.RotatingFileHandler(
@@ -72,6 +76,7 @@ handler = logging.handlers.RotatingFileHandler(
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
 
 # --- UI Color Pair Definitions ---
 HIGHLIGHT_COLOR_PAIR = 1
@@ -123,7 +128,7 @@ HELP_TEXT = [
     "  b: Bookmark current backlink",
     "  B: View bookmarks",
     "  ?: Toggle this help screen",
-    "  q: Quit the viewer",
+    "  q: quit the viewer",
     "",
     "Press '?' again or ESC while in help to close this screen."
 ]
@@ -765,6 +770,9 @@ def interactive_ui(stdscr: curses.window, nvim: pynvim.Nvim) -> None:
         curses.init_pair(HELP_COLOR_PAIR, curses.COLOR_YELLOW, DEFAULT_COLOR)
     except curses.error:
         pass
+
+    CONFIG["THESIS_DIR"] = os.path.expanduser(CONFIG["THESIS_DIR"]) # Expand THESIS_DIR here after config load
+
     ui = UIState()
     global executor
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -784,7 +792,7 @@ def main() -> None:
         logger.error(f"Error: THESIS_DIR does not exist: {CONFIG['THESIS_DIR']}")
         sys.exit(f"Error: THESIS_DIR does not exist: {CONFIG['THESIS_DIR']}")
     try:
-        nvim = pynvim.attach("socket", path="/tmp/obsidian.sock")
+        nvim = pynvim.attach("socket", path="/tmp/obsidian.sock") # socket path not configurable yet in python part
     except Exception as e:
         logger.exception(f"Failed to attach to Neovim socket: {e}")
         sys.exit("Failed to attach to Neovim socket: " + str(e))
@@ -792,4 +800,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-  
+

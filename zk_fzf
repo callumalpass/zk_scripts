@@ -1,16 +1,21 @@
-#!/bin/bash
-source $HOME/mybin/variables.sh
-PATH=$PATH:$HOME/mybin
-cd $NOTES_DIR || exit
-# ~/mybin/zk_index &
+#!/usr/bin/env bash
 
-INDEX_FILE="$HOME/Dropbox/notes/index.json"
-PY_ZK="$HOME/mybin/py_zk.py"
-COLOR_ALWAYS="--color always"
-OUTPUT_PLAIN="--output-format plain"
+CONFIG_FILE="/home/calluma/.config/zk_scripts/config.yaml"
+
+source /home/calluma/mybin/config_loader.sh
+
+load_config "$CONFIG_FILE" "zk_fzf" # Call load_config with config file and script section name
+
+# # Add mybin to PATH (if it exists and is not already there)
+# if [[ -d "$MYBIN_DIR" && ! :"$PATH": =~ :"$MYBIN_DIR": ]]; then
+#     PATH="$PATH:$MYBIN_DIR"
+# fi
+
+cd "$NOTES_DIR" || exit
+
 TEMPLINK=$(mktemp)
 
-$PY_ZK --index-file "$INDEX_FILE" $COLOR_ALWAYS $OUTPUT_PLAIN \
+"$PY_ZK" --index-file "$INDEX_FILE" --color always \
 | fzf \
     --tiebreak=begin,index \
     --delimiter='::' \
@@ -20,30 +25,22 @@ $PY_ZK --index-file "$INDEX_FILE" $COLOR_ALWAYS $OUTPUT_PLAIN \
     --preview-label='' \
     --multi \
     --bind "Enter:execute[nvim --server /tmp/obsidian.sock --remote $NOTES_DIR/{+1}.md]+abort" \
-    --bind "alt-a:execute[~/mybin/zk_index]+reload:($PY_ZK --index-file \"$INDEX_FILE\" $COLOR_ALWAYS $OUTPUT_PLAIN)" \
-    --bind "ctrl-e:execute[nvim {+1}.md]+reload:($PY_ZK --index-file \"$INDEX_FILE\" $COLOR_ALWAYS $OUTPUT_PLAIN)" \
-    --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:($PY_ZK --index-file \"$INDEX_FILE\" $COLOR_ALWAYS $OUTPUT_PLAIN)" \
-    --bind "ctrl-alt-d:execute[nvim $NOTES_DIR/diary/`date '+%Y-%m-%d' -d tomorrow`.md;]" \
-    --bind "alt-9:reload[$PY_ZK --index-file \"$INDEX_FILE\" --unique-tags $OUTPUT_PLAIN $COLOR_ALWAYS]+clear-query" \
-    --bind "alt-1:reload[rg -l {1} | sed 's/\.md$//g' | $PY_ZK --index-file \"$INDEX_FILE\" $OUTPUT_PLAIN $COLOR_ALWAYS --stdin]+clear-query" \
-    --bind "alt-8:reload[$PY_ZK --index-file \"$INDEX_FILE\" --filter-tag {1} $OUTPUT_PLAIN $COLOR_ALWAYS]+clear-query" \
-    --bind "?:execute(env _TASKFZF_SHOW=keys $0 {1}.md | fzf --ansi --header-lines=1 --info=hidden --bind \"?:abort\")" \
+    --bind "alt-a:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "ctrl-e:execute[nvim {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "ctrl-alt-d:execute[nvim \"$NOTES_DIR/$NOTES_DIARY_SUBDIR/$(date '+%Y-%m-%d' -d tomorrow).md\";]" \
+    --bind "alt-9:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --unique-tags \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]+clear-query" \
+    --bind "alt-1:reload[rg -l {1} | sed 's/\.md$//g' | \"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\" --stdin]+clear-query" \
+    --bind "alt-8:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag {1} \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]+clear-query" \
+    --bind "?:execute(env _TASKFZF_SHOW=keys \"$0\" {1}.md | fzf --ansi --header-lines=1 --info=hidden --bind \"?:abort\")" \
     --bind "alt-?:toggle-preview" \
-    --bind "alt-j:reload[$PY_ZK --index-file \"$INDEX_FILE\" --filter-tag diary $OUTPUT_PLAIN $COLOR_ALWAYS]" \
-    --bind "alt-b:reload[$PY_ZK --index-file \"$INDEX_FILE\" --filter-tag literature_note $OUTPUT_PLAIN $COLOR_ALWAYS]" \
+    --bind "alt-j:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag diary \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]" \
+    --bind "alt-b:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag literature_note \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]" \
     --bind "ctrl-s:reload[rg '^' --sortr modified --field-match-separator='::' --color=always --type md | sed 's/\.md//' ]" \
-    --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=TwoDark --color=never --decorations=never {1}.md 2> /dev/null || bat {1}.md" \
+    --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=\"$BAT_THEME\" --color=never --decorations=never {1}.md 2> /dev/null || bat {1}.md" \
     --preview-window 'wrap:50%:<50(up)' \
-    --ansi | tail -n 1 | awk -F :: '{print $1}' | py_zk.py --index-file $NOTES_DIR/index.json --stdin --output-format plain --format-string '[[{filename}|{title}]]' --separator='' > "$TEMPLINK"
-
+    --ansi | tail -n 1 | awk -F :: '{print $1}' | "$PY_ZK" --index-file "$NOTES_DIR/index.json" --stdin --output-format plain --format-string '[[{filename}|{title}]]' --separator='' > "$TEMPLINK"
 
 link=$(cat "$TEMPLINK")
 tmux send-keys -l "$link"
-
-
-
-
-
-
-
 

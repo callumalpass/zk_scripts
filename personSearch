@@ -1,24 +1,25 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Add custom binaries and source variables
-PATH=$PATH:$HOME/mybin
-source $HOME/mybin/variables.sh
+CONFIG_FILE="/home/calluma/.config/zk_scripts/config.yaml"
 
-# Change to notes directory
+source /home/calluma/mybin/config_loader.sh
+
+load_config "$CONFIG_FILE" "personSearch" # Call load_config with config file and script section name
+
 cd "$NOTES_DIR" || exit
 
 # Run fzf and process the output
 selection=$(
-    ~/mybin/py_zk.py --index-file "index.json" --filter-tag person --fields filename aliases givenName familyName --color always \
+    "$PY_ZK" --index-file "index.json" --filter-tag person --fields filename aliases givenName familyName --color always \
             | fzf \
-        --bind "ctrl-e:execute[nvim $NOTES_DIR/{1}.md]" \
+        --bind "ctrl-e:execute[nvim \"$NOTES_DIR/{1}.md\"]" \
         --bind "one:accept" \
         --delimiter="::" \
         --with-nth=2,3,4 \
         --tiebreak=begin,index \
         --info=right \
         --ellipsis= --preview-label='' \
-        --preview="bat $NOTES_DIR/{1}.md" \
+        --preview="$BAT_COMMAND\" $NOTES_DIR/{1}.md"\
         --preview-window 'wrap:50%:<40(up)' \
         --ansi
 )
@@ -27,7 +28,7 @@ selection=$(
 # If no selection, exit
 [ -z "$selection" ] && exit
 
-transform=$(echo "$selection" | awk -F :: '{print $1}' | py_zk.py --index-file index.json --stdin --output-format plain --format-string '[[{filename}|{givenName}]]' --separator='')
+transform=$(echo "$selection" | awk -F :: '{print $1}' | "$PY_ZK" --index-file index.json --stdin --output-format plain --format-string '[[{filename}|{givenName}]]' --separator='')
 
 # Send the processed output to the active tmux pane
 tmux send-keys "$transform"
