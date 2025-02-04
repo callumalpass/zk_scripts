@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-CONFIG_FILE="/home/calluma/.config/zk_scripts/config.yaml"
+CONFIG_FILE="$HOME/.config/zk_scripts/config.yaml"
 
 source /home/calluma/mybin/config_loader.sh
 
@@ -21,11 +21,11 @@ TEMPLINK=$(mktemp)
     --delimiter='::' \
     --info=right \
     --ellipsis= \
-    --expect="alt-y" \
     --preview-label='' \
     --multi \
     --bind "Enter:execute[nvim --server /tmp/obsidian.sock --remote $NOTES_DIR/{+1}.md]+abort" \
     --bind "alt-a:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "alt-y:execute[echo {1} | $PY_ZK --index-file $NOTES_DIR/index.json --stdin --format-string '[[{filename}|{title}]]' --separator='' > $TEMPLINK ]+abort" \
     --bind "ctrl-e:execute[nvim {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
     --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
     --bind "ctrl-alt-d:execute[nvim \"$NOTES_DIR/$NOTES_DIARY_SUBDIR/$(date '+%Y-%m-%d' -d tomorrow).md\";]" \
@@ -39,8 +39,14 @@ TEMPLINK=$(mktemp)
     --bind "ctrl-s:reload[rg '^' --sortr modified --field-match-separator='::' --color=always --type md | sed 's/\.md//' ]" \
     --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=\"$BAT_THEME\" --color=never --decorations=never {1}.md 2> /dev/null || bat {1}.md" \
     --preview-window 'wrap:50%:<50(up)' \
-    --ansi | tail -n 1 | awk -F :: '{print $1}' | "$PY_ZK" --index-file "$NOTES_DIR/index.json" --stdin --output-format plain --format-string '[[{filename}|{title}]]' --separator='' > "$TEMPLINK"
+    --ansi
 
 link=$(cat "$TEMPLINK")
-tmux send-keys -l "$link"
+
+if [[ -n $link ]]
+then
+        tmux send-keys -l "$link"
+        exit
+fi
+
 
