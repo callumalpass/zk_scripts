@@ -41,11 +41,12 @@ TEMPLINK=$(mktemp)
     --preview-window 'wrap:50%:<50(up)' \
     --ansi
 
-link=$(cat "$TEMPLINK")
 
-if [[ -n $link ]]
+if [[ -e $TEMPLINK ]]
 then
+        link=$(cat "$TEMPLINK")
         tmux send-keys -l "$link"
+else
         exit
 fi
 
