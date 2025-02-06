@@ -135,8 +135,67 @@ HELP_TEXT = [
 
 # --- Regex Helper ---
 def compile_link_pattern(note_basename: str) -> re.Pattern:
-    pattern_str = rf"\[{re.escape(note_basename)}(?:\|.*?)?\]"
+    """
+    Compiles a regex pattern to find links to a note.
+
+    If the note_basename starts with 'diary/', it will match any occurrence of the text
+    following 'diary/' in the basename, regardless of wikilink formatting.
+    Otherwise, it matches standard wikilinks to the note.
+
+    Args:
+        note_basename: The basename of the note (e.g., "My Note" or "diary/2023-10-26").
+
+    Returns:
+        A compiled re.Pattern object.
+    """
+    if note_basename.startswith("diary/"):
+        # For diary notes, match whatever comes after "diary/"
+        text_to_match = note_basename[len("diary/"):]
+        pattern_str = re.escape(text_to_match) # Escape special regex characters
+    else:
+        # Original logic for non-diary notes
+        pattern_str = rf"\[{re.escape(note_basename)}(?:\|.*?)?\]"
+
     return re.compile(pattern_str, re.IGNORECASE)
+
+# Example Usage and Tests:
+# Regular Note
+regular_pattern = compile_link_pattern("My Note")
+print(f"Regular pattern for 'My Note': {regular_pattern.pattern}")
+# Expected: (?i)\[My\ Note(?:\|.*?)?\]
+
+# Diary Note - Date format YYYY-MM-DD
+diary_pattern_date = compile_link_pattern("diary/2023-10-26")
+print(f"Diary pattern for 'diary/2023-10-26': {diary_pattern_date.pattern}")
+# Expected: (?i)2023\-10\-26  (escaped hyphens)
+
+# Diary Note -  Something other than date
+diary_pattern_other = compile_link_pattern("diary/my_diary_entry")
+print(f"Diary pattern for 'diary/my_diary_entry': {diary_pattern_other.pattern}")
+# Expected: (?i)my\_diary\_entry (escaped underscores)
+
+
+# Test matching - Regular note
+text_regular = "[My Note] and [[My Note|Alias]] and not related text"
+matches_regular = regular_pattern.findall(text_regular)
+print(f"Matches for regular note in '{text_regular}': {matches_regular}")
+# Expected: ['[My Note]', '[My Note|Alias]']
+
+# Test matching - Diary note with date
+text_diary_date = "On 2023-10-26, something happened. Also [[diary/2023-10-26]] and 2023-10-26 mentioned again."
+diary_pattern_date = compile_link_pattern("diary/2023-10-26") # Recompile pattern for testing
+matches_diary_date = diary_pattern_date.findall(text_diary_date)
+print(f"Matches for diary date note in '{text_diary_date}': {matches_diary_date}")
+# Expected: ['2023-10-26', '2023-10-26']
+
+# Test matching - Diary note with other text
+text_diary_other = "Entry for my_diary_entry today.  Also [[diary/my_diary_entry]] and just 'my_diary_entry' again."
+diary_pattern_other = compile_link_pattern("diary/my_diary_entry") # Recompile pattern
+matches_diary_other = diary_pattern_other.findall(text_diary_other)
+print(f"Matches for diary other note in '{text_diary_other}': {matches_diary_other}")
+# Expected: ['my_diary_entry', 'my_diary_entry', 'my_diary_entry']
+
+
 
 # --- Helper Functions ---
 def extract_yaml_title(lines: List[str]) -> Optional[str]:
@@ -172,12 +231,19 @@ def find_backlinks(note_file: str) -> List[str]:
     abs_thesis = os.path.abspath(CONFIG["THESIS_DIR"])
     abs_note = os.path.abspath(note_file)
     if not abs_note.startswith(abs_thesis):
-        msg = (f"{BACKLINKS_HEADER_TEXT} {note_file}\n\n"
+        msg = (f"{BACKLINKS_HEADER_TEXT} {note_file}nn"
                "File is outside notes directory; no backlinks searched.")
         logger.warning(msg)
         return
-    note_basename = os.path.splitext(os.path.basename(note_file))[0]
+
+    # Corrected basename extraction: Remove suffix, keep path
+    rel_note_path = os.path.relpath(abs_note, abs_thesis) # Get relative path
+    note_basename = os.path.splitext(rel_note_path)[0]    # Remove suffix from relative path
+
+    logger.info(f"Note basename (relative path, no suffix): {note_basename}") # Debug print
     pattern = compile_link_pattern(note_basename)
+    logger.info(f"Generated pattern: {pattern.pattern}")
+
     backlinks: List[str] = []
     for root, _, files in os.walk(CONFIG["THESIS_DIR"]):
         for f in files:
@@ -200,6 +266,9 @@ def find_backlinks(note_file: str) -> List[str]:
         return ["", NO_BACKLINKS_FOUND_TEXT]
     logger.info(f"Found {len(backlinks)} backlinks for {note_file}")
     return backlinks
+
+
+
 
 def sort_backlinks(backlinks: List[str], sort_order: str) -> List[str]:
     if sort_order == "filename":
