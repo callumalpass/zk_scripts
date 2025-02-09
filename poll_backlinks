@@ -2,16 +2,12 @@
 """
 Ultimate Backlink Viewer – THE ULTIMATE Edition
 ------------------------------------------------
-An ultra-creative, feature-packed backlink viewer for your Neovim-based note ecosystem.
-New and Creative Features in this Edition:
   - **Help Overlay:** Press '?' to display/hide an on-screen help guide.
   - **Multi-Mode Preview:** Toggle between preview snippet mode and full file view with 'm'.
   - **Bookmarking:** Mark links as bookmarks with 'b' and review them with 'B'.
   - **Force Refresh & Progress Bar:** Press 'r' to refresh immediately; the status bar shows last refresh time and a progress indicator during scanning.
   - **Enhanced Status Bar:** Now displays sort order, active filter, last refresh time, and refresh progress.
   - **Dynamic Resizing & Robust Input:** The UI adapts to terminal changes and supports full mouse & keyboard input.
-  
-Enjoy this ULTIMATE, DO MOAR, REALLY GET CREATIVE version!
 """
 import os
 import re
