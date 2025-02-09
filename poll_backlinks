@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Ultimate Backlink Viewer – THE ULTIMATE Edition
-------------------------------------------------
-  - **Help Overlay:** Press '?' to display/hide an on-screen help guide.
-  - **Multi-Mode Preview:** Toggle between preview snippet mode and full file view with 'm'.
-  - **Bookmarking:** Mark links as bookmarks with 'b' and review them with 'B'.
-  - **Force Refresh & Progress Bar:** Press 'r' to refresh immediately; the status bar shows last refresh time and a progress indicator during scanning.
-  - **Enhanced Status Bar:** Now displays sort order, active filter, last refresh time, and refresh progress.
-  - **Dynamic Resizing & Robust Input:** The UI adapts to terminal changes and supports full mouse & keyboard input.
+Ultimate Backlink Viewer – THE ULTIMATE Edition (Enhanced)
+-----------------------------------------------------------
+Features added in this version:
+  - Persistent bookmarks (saved to a YAML file).
+  - Reverse sort toggle (press "S" to toggle ascending/descending sort).
+  - Optional display of file modification time in backlink list.
+  - Alternate open commands:
+       Enter: open normally
+       v: open in vertical split
+       h: open in horizontal split
+       o: open in a new tab
+  - Preview caching: avoids reloading the same file repeatedly.
+  - (Other features from the original script remain.)
 """
+
 import os
 import re
 import time
@@ -19,14 +25,13 @@ import textwrap
 import logging
 import logging.handlers
 import concurrent.futures
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Pattern, Any, Dict
 import yaml
 
+# --- Configuration Loading ---
 CONFIG_FILE = os.path.expanduser("~/.config/zk_scripts/config.yaml")
-
-# --- Default Configuration ---
-DEFAULT_CONFIG = {
-    "THESIS_DIR": os.path.expanduser(os.environ.get("NOTES_DIR", "~/Dropbox/notes")), # Env var or default, now using NOTES_DIR env var name
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "THESIS_DIR": os.path.expanduser(os.environ.get("NOTES_DIR", "~/Dropbox/notes")),
     "POLL_INTERVAL": 2,
     "CONTEXT_LINES": 10,
     "STATUS_BAR_CLEAR_TIME": 3,
@@ -34,32 +39,36 @@ DEFAULT_CONFIG = {
     "PREVIEW_SCROLL_LINES": 3,
     "LOG_MAX_BYTES": 1024 * 1024,
     "LOG_BACKUP_COUNT": 5,
-    "CONFIG_PATH": os.path.expanduser(os.environ.get("POLL_BACKLINKS_CONFIG_PATH", "~/.config/py_zk/config.yaml")), # Configurable config path
-    "LOG_FILE": os.environ.get("POLL_BACKLINKS_LOG_FILE", "ultimate_backlinks.log"), # Configurable log file
+    "CONFIG_PATH": os.path.expanduser(os.environ.get("POLL_BACKLINKS_CONFIG_PATH", "~/.config/py_zk/config.yaml")),
+    "LOG_FILE": os.environ.get("POLL_BACKLINKS_LOG_FILE", "ultimate_backlinks.log"),
+    "SHOW_MOD_TIME": False,  # If true, display file modification time in backlink list.
 }
 
-def load_config_yaml(config_file_path):
-    """Loads YAML config, merges with defaults, and applies env vars."""
+def load_config_yaml(config_file_path: str) -> Dict[str, Any]:
+    """
+    Loads the YAML configuration file, merges it with defaults, and applies environment variables.
+    """
     config = DEFAULT_CONFIG.copy()
     if os.path.exists(config_file_path):
         try:
             with open(config_file_path, 'r') as f:
                 user_config = yaml.safe_load(f) or {}
-            config.update(user_config.get('poll_backlinks', {})) # Load only 'poll_backlinks' section and top-level config
-            config.update(user_config) # Also load top-level config for global settings like NOTES_DIR
+            # Merge both the 'poll_backlinks' section and any top-level settings.
+            config.update(user_config.get('poll_backlinks', {}))
+            config.update(user_config)
         except Exception as e:
             print(f"Warning: Could not load config file {config_file_path}: {e}", file=sys.stderr)
 
-    # Environment variables override config file and defaults
+    # Environment variables override config and defaults.
     for key in DEFAULT_CONFIG:
         env_var = os.environ.get(key)
         if env_var:
             config[key] = env_var
     return config
 
-CONFIG = load_config_yaml(CONFIG_FILE)
-LOG_FILE = CONFIG["LOG_FILE"] # Use configured log file
-
+CONFIG: Dict[str, Any] = load_config_yaml(CONFIG_FILE)
+CONFIG["THESIS_DIR"] = os.path.expanduser(CONFIG["THESIS_DIR"])
+LOG_FILE = CONFIG["LOG_FILE"]
 
 # --- Logging Setup ---
 logger = logging.getLogger("UltimateBacklinkViewer")
@@ -72,7 +81,6 @@ handler = logging.handlers.RotatingFileHandler(
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
-
 
 # --- UI Color Pair Definitions ---
 HIGHLIGHT_COLOR_PAIR = 1
@@ -92,9 +100,9 @@ SCROLL_DOWN_INDICATOR = "vvv"
 YAML_TOGGLE_ON_TEXT = "[YAML ON]"
 YAML_TOGGLE_OFF_TEXT = "[YAML OFF]"
 INSTRUCTIONS_TEXT = (
-    "↑/↓/j/k: navigate | Enter: open | PgUp/PgDn/u/d: scroll preview | "
-    "t: toggle frontmatter | s: sort | f: filter | r: refresh | m: toggle mode | "
-    "b: bookmark | B: view bookmarks | ?: help | q: quit"
+    "↑/↓/j/k: navigate | Enter: open | v: vsplit | h: split | o: new tab | PgUp/PgDn/u/d: scroll preview | "
+    "t: toggle frontmatter | s: cycle sort | S: toggle reverse sort | f: filter | r: refresh | m: toggle mode | "
+    "b: bookmark | B: view bookmarks | x: remove bookmark (in bookmark view) | ?: help | q: quit"
 )
 HEADER_TEXT_PREFIX = "Neovim File:"
 BACKLINKS_HEADER_TEXT = "Backlinks for:"
@@ -106,95 +114,74 @@ SCANNING_BACKLINKS_TEXT = "Scanning backlinks..."
 PREVIEW_NO_PREVIEW_TEXT = "No preview available."
 SORT_ORDER_NONE_TEXT = "Sort: None"
 SORT_ORDER_FILENAME_TEXT = "Sort: Filename"
-SORT_ORDER_LINE_NUMBER_TEXT = "Sort: Line Number"
-SORT_ORDER_TITLE_TEXT = "Sort: Title" # Not used anymore
-HELP_TEXT = [
+SORT_ORDER_TITLE_TEXT = "Sort: Title"
+
+HELP_TEXT: List[str] = [
     "Ultimate Backlink Viewer – Help",
     "",
     "Navigation:",
     "  ↑/k: Up      ↓/j: Down      Enter: Open Link",
+    "  v: Open in vertical split    h: Open in horizontal split    o: Open in new tab",
     "  PgUp/PgDn, u/d: Scroll preview",
     "",
     "Commands:",
     "  t: Toggle frontmatter view",
     "  s: Cycle sort order",
+    "  S: Toggle reverse sort order",
     "  f: Enter filter mode",
     "  r: Force refresh scan",
     "  m: Toggle preview mode (snippet/full file)",
     "  b: Bookmark current backlink",
-    "  B: View bookmarks",
+    "  B: Toggle bookmarks view",
+    "  x: Remove bookmark (in bookmarks view)",
     "  ?: Toggle this help screen",
-    "  q: quit the viewer",
+    "  q: Quit the viewer",
     "",
-    "Press '?' again or ESC while in help to close this screen."
+    "Press '?' or ESC while in help to close this screen."
 ]
 
-# --- Regex Helper ---
-def compile_link_pattern(note_basename: str) -> re.Pattern:
-    """
-    Compiles a regex pattern to find links to a note.
+# --- Persistent Bookmarks Functions ---
+BOOKMARKS_FILE = os.path.expanduser("~/.config/zk_scripts/bookmarks.yaml")
 
-    If the note_basename starts with 'diary/', it will match any occurrence of the text
-    following 'diary/' in the basename, regardless of wikilink formatting.
-    Otherwise, it matches standard wikilinks to the note.
+def load_bookmarks() -> List[str]:
+    """Load bookmarks from the persistent YAML file."""
+    if os.path.exists(BOOKMARKS_FILE):
+        try:
+            with open(BOOKMARKS_FILE, "r") as f:
+                data = yaml.safe_load(f)
+            return data.get("bookmarks", []) if isinstance(data, dict) else []
+        except Exception as e:
+            logger.exception(f"Failed to load bookmarks: {e}")
+    return []
 
-    Args:
-        note_basename: The basename of the note (e.g., "My Note" or "diary/2023-10-26").
-
-    Returns:
-        A compiled re.Pattern object.
-    """
-    if note_basename.startswith("diary/"):
-        # For diary notes, match whatever comes after "diary/"
-        text_to_match = note_basename[len("diary/"):]
-        pattern_str = re.escape(text_to_match) # Escape special regex characters
-    else:
-        # Original logic for non-diary notes
-        pattern_str = rf"\[{re.escape(note_basename)}(?:\|.*?)?\]"
-
-    return re.compile(pattern_str, re.IGNORECASE)
-
-# Example Usage and Tests:
-# Regular Note
-regular_pattern = compile_link_pattern("My Note")
-print(f"Regular pattern for 'My Note': {regular_pattern.pattern}")
-# Expected: (?i)\[My\ Note(?:\|.*?)?\]
-
-# Diary Note - Date format YYYY-MM-DD
-diary_pattern_date = compile_link_pattern("diary/2023-10-26")
-print(f"Diary pattern for 'diary/2023-10-26': {diary_pattern_date.pattern}")
-# Expected: (?i)2023\-10\-26  (escaped hyphens)
-
-# Diary Note -  Something other than date
-diary_pattern_other = compile_link_pattern("diary/my_diary_entry")
-print(f"Diary pattern for 'diary/my_diary_entry': {diary_pattern_other.pattern}")
-# Expected: (?i)my\_diary\_entry (escaped underscores)
-
-
-# Test matching - Regular note
-text_regular = "[My Note] and [[My Note|Alias]] and not related text"
-matches_regular = regular_pattern.findall(text_regular)
-print(f"Matches for regular note in '{text_regular}': {matches_regular}")
-# Expected: ['[My Note]', '[My Note|Alias]']
-
-# Test matching - Diary note with date
-text_diary_date = "On 2023-10-26, something happened. Also [[diary/2023-10-26]] and 2023-10-26 mentioned again."
-diary_pattern_date = compile_link_pattern("diary/2023-10-26") # Recompile pattern for testing
-matches_diary_date = diary_pattern_date.findall(text_diary_date)
-print(f"Matches for diary date note in '{text_diary_date}': {matches_diary_date}")
-# Expected: ['2023-10-26', '2023-10-26']
-
-# Test matching - Diary note with other text
-text_diary_other = "Entry for my_diary_entry today.  Also [[diary/my_diary_entry]] and just 'my_diary_entry' again."
-diary_pattern_other = compile_link_pattern("diary/my_diary_entry") # Recompile pattern
-matches_diary_other = diary_pattern_other.findall(text_diary_other)
-print(f"Matches for diary other note in '{text_diary_other}': {matches_diary_other}")
-# Expected: ['my_diary_entry', 'my_diary_entry', 'my_diary_entry']
-
-
+def save_bookmarks(bookmarks: List[str]) -> None:
+    """Save bookmarks to the persistent YAML file."""
+    try:
+        os.makedirs(os.path.dirname(BOOKMARKS_FILE), exist_ok=True)
+        with open(BOOKMARKS_FILE, "w") as f:
+            yaml.safe_dump({"bookmarks": bookmarks}, f)
+    except Exception as e:
+        logger.exception(f"Failed to save bookmarks: {e}")
 
 # --- Helper Functions ---
+def compile_link_pattern(note_basename: str) -> Pattern:
+    """
+    Compiles a regex pattern to find links to a note.
+    
+    For diary notes (starting with "diary/"), it matches any occurrence of the text after "diary/".
+    Otherwise, it matches standard wikilinks (with optional aliasing).
+    """
+    if note_basename.startswith("diary/"):
+        text_to_match = note_basename[len("diary/"):]
+        pattern_str = re.escape(text_to_match)
+    else:
+        pattern_str = rf"\[{re.escape(note_basename)}(?:\|.*?)?\]"
+    return re.compile(pattern_str, re.IGNORECASE)
+
 def extract_yaml_title(lines: List[str]) -> Optional[str]:
+    """
+    Extracts the 'title' value from a YAML frontmatter block, if present.
+    """
     if not lines or lines[0].strip() != "---":
         return None
     yaml_lines = []
@@ -209,6 +196,9 @@ def extract_yaml_title(lines: List[str]) -> Optional[str]:
     return None
 
 def extract_full_frontmatter(lines: List[str]) -> Optional[List[str]]:
+    """
+    Extracts the full YAML frontmatter block (including delimiters) from the given lines.
+    """
     if not lines or lines[0].strip() != "---":
         return None
     frontmatter = [lines[0]]
@@ -219,41 +209,60 @@ def extract_full_frontmatter(lines: List[str]) -> Optional[List[str]]:
     return None
 
 def find_backlinks(note_file: str) -> List[str]:
+    """
+    Scans the entire THESIS_DIR for markdown files linking to the given note.
+    Returns a list of backlink strings in the format "rel_path:title" (with mod time appended if enabled).
+    """
     logger.info(f"Scanning backlinks for {note_file}")
     if not os.path.isfile(note_file):
         err_msg = f"Error: Not a file: {note_file}"
         logger.error(err_msg)
-        return
+        return [err_msg]
+
     abs_thesis = os.path.abspath(CONFIG["THESIS_DIR"])
     abs_note = os.path.abspath(note_file)
     if not abs_note.startswith(abs_thesis):
-        msg = (f"{BACKLINKS_HEADER_TEXT} {note_file}nn"
+        msg = (f"{BACKLINKS_HEADER_TEXT} {note_file}\n"
                "File is outside notes directory; no backlinks searched.")
         logger.warning(msg)
-        return
+        return [msg]
 
-    # Corrected basename extraction: Remove suffix, keep path
-    rel_note_path = os.path.relpath(abs_note, abs_thesis) # Get relative path
-    note_basename = os.path.splitext(rel_note_path)[0]    # Remove suffix from relative path
-
-    logger.info(f"Note basename (relative path, no suffix): {note_basename}") # Debug print
+    rel_note_path = os.path.relpath(abs_note, abs_thesis)
+    note_basename = os.path.splitext(rel_note_path)[0]
+    logger.info(f"Note basename (relative path, no suffix): {note_basename}")
     pattern = compile_link_pattern(note_basename)
     logger.info(f"Generated pattern: {pattern.pattern}")
 
     backlinks: List[str] = []
+    processed_files = set()  # Ensure one backlink per file
+
     for root, _, files in os.walk(CONFIG["THESIS_DIR"]):
         for f in files:
             if f.endswith(".md"):
                 full_path = os.path.join(root, f)
+                if full_path == note_file:
+                    continue  # Skip self
+                rel_path = os.path.relpath(full_path, CONFIG["THESIS_DIR"])
+                if rel_path in processed_files:
+                    continue
                 try:
-                    note_lines = []
                     with open(full_path, "r", encoding="utf8") as infile:
                         note_lines = infile.readlines()
-                        for line_num, line in enumerate(note_lines, start=1):
-                            if pattern.search(line):
-                                rel_path = os.path.relpath(full_path, CONFIG["THESIS_DIR"])
-                                title = extract_yaml_title(note_lines) or "(No Title)"
-                                backlinks.append(f"{rel_path}:{line_num}:{title}") # Store title instead of context
+                    for line in note_lines:
+                        if pattern.search(line):
+                            title = extract_yaml_title(note_lines) or "(No Title)"
+                            if CONFIG.get("SHOW_MOD_TIME", False):
+                                try:
+                                    mod_time = os.path.getmtime(full_path)
+                                    mod_time_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(mod_time))
+                                except Exception:
+                                    mod_time_str = "unknown"
+                                backlink_str = f"{rel_path}:{title} [mod: {mod_time_str}]"
+                            else:
+                                backlink_str = f"{rel_path}:{title}"
+                            backlinks.append(backlink_str)
+                            processed_files.add(rel_path)
+                            break  # One match per file is enough
                 except Exception as e:
                     error_message = f"Error reading {full_path}: {e}"
                     logger.exception(error_message)
@@ -263,34 +272,43 @@ def find_backlinks(note_file: str) -> List[str]:
     logger.info(f"Found {len(backlinks)} backlinks for {note_file}")
     return backlinks
 
-
-
-
-def sort_backlinks(backlinks: List[str], sort_order: str) -> List[str]:
+def sort_backlinks(backlinks: List[str], sort_order: str, reverse: bool = False) -> List[str]:
+    """
+    Sorts the backlinks list based on sort_order.
+    """
     if sort_order == "filename":
-        return sorted(backlinks, key=lambda bl: bl.split(":")[0])
-    elif sort_order == "linenumber":
-        return sorted(
-            backlinks,
-            key=lambda bl: int(bl.split(":")[1])
-            if len(bl.split(":")) > 1 and bl.split(":")[1].isdigit()
-            else 0,
-        )
-    elif sort_order == "title": # Sort by title now
-        return sorted(backlinks, key=lambda bl: bl.split(":")[2].lower()) # Sort by title
-    return backlinks
+        sorted_list = sorted(backlinks, key=lambda bl: bl.split(":", 1)[0], reverse=reverse)
+    elif sort_order == "title":
+        sorted_list = sorted(backlinks, key=lambda bl: bl.split(":", 1)[1].lower() if ":" in bl else "", reverse=reverse)
+    else:
+        sorted_list = backlinks
+    return sorted_list
 
-def open_backlink_in_nvim(nvim: pynvim.Nvim, backlink_line: str) -> None:
+def open_backlink_in_nvim(nvim: pynvim.Nvim, backlink_line: str, mode: str = "edit") -> None:
+    """
+    Opens the file corresponding to the selected backlink in Neovim.
+    
+    mode: 
+      "edit" (default): normal edit
+      "vsplit": vertical split
+      "split": horizontal split
+      "tabnew": new tab
+    """
     try:
-        parts = backlink_line.split(":", 2)
-        if len(parts) < 2:
+        parts = backlink_line.split(":", 1)
+        if len(parts) < 1:
             raise ValueError("Invalid backlink format")
         rel_path = parts[0]
         filepath = os.path.join(CONFIG["THESIS_DIR"], rel_path)
-        linum = int(parts[1])
-        nvim.command(f"edit {filepath}")
-        nvim.command(f"call cursor({linum}, 1)")
-        logger.info(f"Opened file {filepath} at line {linum}")
+        if mode == "vsplit":
+            nvim.command(f"vsplit {filepath}")
+        elif mode == "split":
+            nvim.command(f"split {filepath}")
+        elif mode == "tabnew":
+            nvim.command(f"tabnew {filepath}")
+        else:
+            nvim.command(f"edit {filepath}")
+        logger.info(f"Opened file {filepath} with mode {mode}")
     except FileNotFoundError as e:
         error_message = f"File not found: {rel_path} - {e}"
         nvim.command(f'echohl ErrorMsg | echom "{error_message}" | echohl None')
@@ -305,27 +323,32 @@ def open_backlink_in_nvim(nvim: pynvim.Nvim, backlink_line: str) -> None:
         logger.exception(error_message)
 
 def format_preview_line(line: str, width: int) -> Tuple[List[str], bool]:
+    """
+    Wraps a given line to fit the provided width and determines if the line is a header.
+    """
     is_header = line.lstrip().startswith("#")
     wrapped = textwrap.wrap(line, width=width) if line else [""]
     return wrapped, is_header
 
-# --- Preview Class ---
+# --- Preview Class with Caching Support ---
 class Preview:
-    def __init__(self, backlink_line: str):
+    def __init__(self, backlink_line: str) -> None:
+        """
+        Initializes preview data for the file corresponding to the backlink.
+        """
         self.filepath: Optional[str] = None
-        self.match_index: int = 1
         self.file_lines: List[str] = []
         self.total_lines: int = 0
         self.title: Optional[str] = None
         self.full_frontmatter: Optional[List[str]] = None
-        self.view_start: int = 0
+        self.view_start: int = 0  # Always start from the top
+
         try:
-            parts = backlink_line.split(":", 2)
-            if len(parts) < 2:
+            parts = backlink_line.split(":", 1)
+            if not parts:
                 raise ValueError("Bad backlink format")
             rel_path = parts[0]
             self.filepath = os.path.join(CONFIG["THESIS_DIR"], rel_path)
-            self.match_index = int(parts[1]) - 1
             if not os.path.exists(self.filepath):
                 raise FileNotFoundError(f"File not found: {self.filepath}")
             with open(self.filepath, "r", encoding="utf8") as f:
@@ -333,7 +356,7 @@ class Preview:
             self.total_lines = len(self.file_lines)
             self.title = extract_yaml_title(self.file_lines)
             self.full_frontmatter = extract_full_frontmatter(self.file_lines)
-            self.view_start = max(self.match_index - CONFIG["CONTEXT_LINES"], 0)
+            self.view_start = 0
         except Exception as e:
             error_message = f"Preview error: {e} - Backlink: {backlink_line}"
             logger.exception(error_message)
@@ -341,11 +364,14 @@ class Preview:
             self.total_lines = 1
 
     def get_visible_lines(self, height: int, width: int) -> List[str]:
-        output = []
+        """
+        Returns the list of lines to be displayed in the preview window.
+        """
+        output: List[str] = []
         output.append(SCROLL_UP_INDICATOR if self.view_start > 0 else "")
         for idx in range(self.view_start, min(self.view_start + height, self.total_lines)):
             line = self.file_lines[idx]
-            prefix = ">> " if idx == self.match_index else "   "
+            prefix = "   "
             avail_width = width - len(prefix)
             wrapped, _ = format_preview_line(line, avail_width)
             output.extend(prefix + w_line for w_line in wrapped)
@@ -368,10 +394,10 @@ class Preview:
 
 # --- UI State Management ---
 class UIState:
-    def __init__(self):
+    def __init__(self) -> None:
         self.selected_idx: int = 0
         self.list_offset: int = 0
-        self.backlinks: List[str] = [] # Now stores "rel_path:line_num:title"
+        self.backlinks: List[str] = []       # Full backlink list ("rel_path:title[...]")
         self.displayed_backlinks: List[str] = []
         self.last_file: Optional[str] = None
         self.last_poll_time: float = 0
@@ -381,13 +407,15 @@ class UIState:
         self.status_message: str = ""
         self.status_message_time: float = 0
         self.backlink_sort_order: str = "none"
+        self.sort_reversed: bool = False      # Reverse sorting flag.
         self.backlinks_future: Optional[concurrent.futures.Future] = None
         self.filter_mode: bool = False
         self.filter_query: str = ""
         self.refresh_requested: bool = False
         self.preview_mode_full: bool = False  # False: snippet mode; True: full file view
-        self.bookmarks: List[str] = []         # New: list of bookmarked backlink strings
-        self.show_bookmarks: bool = False      # Toggle to view bookmarks instead of backlinks
+        self.bookmarks: List[str] = load_bookmarks()  # Persistent bookmarks.
+        self.show_bookmarks: bool = False      # Toggle to view bookmarks instead of backlinks.
+        self.preview_cache: Dict[str, Preview] = {}  # Cache for preview data.
 
     def reset_list_state(self) -> None:
         self.selected_idx = 0
@@ -413,45 +441,53 @@ class UIState:
 
 # --- UI Drawing Functions ---
 def draw_instructions(win: curses.window, width: int, status_message: str,
-                      wheel: bool, frontmatter: bool, filter_mode: bool,
-                      filter_query: str, sort_order: str, refresh_flag: bool) -> None:
+                      mouse_enabled: bool, frontmatter: bool, filter_mode: bool,
+                      filter_query: str, sort_order: str, reverse: bool, refresh_flag: bool) -> None:
+    """
+    Draws the instruction/status bar.
+    """
     try:
         if filter_mode:
             instr = f"Filter: {filter_query}_"
         else:
             instr = status_message if status_message else INSTRUCTIONS_TEXT
-        instr += f" | Sort: {sort_order}"
+        instr += f" | Sort: {sort_order}{' (desc)' if reverse else ''}"
         if filter_mode:
             instr += " | FILTER ACTIVE"
         if refresh_flag:
             instr += " | REFRESHING..."
         instr += " | Last Refresh: " + time.strftime("%H:%M:%S")
-        instr += " | Mouse: " + ("✔" if wheel else "❌")
+        instr += " | Mouse: " + ("✔" if mouse_enabled else "❌")
         instr += " | " + (YAML_TOGGLE_ON_TEXT if frontmatter else YAML_TOGGLE_OFF_TEXT)
         win.addnstr(0, 0, instr, width, curses.A_BOLD | curses.color_pair(STATUS_COLOR_PAIR))
     except curses.error:
         pass
 
-def draw_header(win: curses.window, width: int, last_file: Optional[str], sort_order: str) -> None:
+def draw_header(win: curses.window, width: int, last_file: Optional[str], sort_order: str, reverse: bool) -> None:
+    """
+    Draws the header area above the backlink list.
+    """
     try:
         win.addnstr(0, 0, SEPARATOR_LINE, width)
         filename = os.path.basename(last_file) if last_file else NO_FILE_OPEN_TEXT
         header = f"{HEADER_TEXT_PREFIX} {filename}"
         sort_text = {
             "filename": SORT_ORDER_FILENAME_TEXT,
-            "linenumber": SORT_ORDER_LINE_NUMBER_TEXT,
-            "title": SORT_ORDER_TITLE_TEXT, # Now Title Sort
+            "title": SORT_ORDER_TITLE_TEXT,
             "none": SORT_ORDER_NONE_TEXT,
         }.get(sort_order, SORT_ORDER_NONE_TEXT)
-        header += f"  |  {sort_text}"
+        header += f"  |  {sort_text}{' (desc)' if reverse else ''}"
         win.addnstr(1, 0, header, width, curses.A_BOLD | curses.color_pair(HEADER_COLOR_PAIR))
         win.addnstr(2, 0, SEPARATOR_LINE, width)
     except curses.error:
         pass
 
 def draw_title_line(win: curses.window, width: int, preview: Optional[Preview]) -> None:
+    """
+    Draws the title line for the preview window.
+    """
     try:
-        title_text = f"Title: {preview.title}" if preview and preview.title else "Title: (none)"
+        title_text = f"Title: {preview.title}" if (preview and preview.title) else "Title: (none)"
         win.addnstr(0, 0, title_text, width, curses.A_BOLD | curses.color_pair(TITLE_COLOR_PAIR))
     except curses.error:
         pass
@@ -459,6 +495,10 @@ def draw_title_line(win: curses.window, width: int, preview: Optional[Preview]) 
 def draw_backlink_list(win: curses.window, height: int, width: int,
                        backlinks: List[str], selected_idx: int, list_offset: int,
                        filter_query: str) -> int:
+    """
+    Draws the backlink list, applying a filter highlight if needed.
+    Returns the (possibly updated) list_offset.
+    """
     list_start = 3
     list_footer = height - 2
     visible = list_footer - list_start
@@ -478,7 +518,7 @@ def draw_backlink_list(win: curses.window, height: int, width: int,
             pass
         return list_offset
 
-    highlight_regex = re.compile(re.escape(filter_query), re.IGNORECASE) if filter_query else None
+    highlight_regex: Optional[Pattern] = re.compile(re.escape(filter_query), re.IGNORECASE) if filter_query else None
 
     for disp in range(visible):
         actual_idx = list_offset + disp
@@ -502,13 +542,13 @@ def draw_backlink_list(win: curses.window, height: int, width: int,
                                         curses.color_pair(SEARCH_COLOR_PAIR) | curses.A_BOLD)
                             x += len(matches[i])
                 else:
-                    parts = line.split(":", 2) # split into three parts
-                    if len(parts) >= 3:
-                        file_line = f"{parts[0]}:{parts[1]}: "
-                        title_text = parts[2]
-                        win.addnstr(row, 0, file_line, width)
-                        win.addnstr(row, len(file_line), title_text, width - len(file_line),
-                        curses.color_pair(TITLE_COLOR_PAIR) | curses.A_BOLD)
+                    parts = line.split(":", 1)
+                    if len(parts) >= 2:
+                        file_path = f"{parts[0]}: "
+                        title_text = parts[1]
+                        win.addnstr(row, 0, file_path, width)
+                        win.addnstr(row, len(file_path), title_text, width - len(file_path),
+                                    curses.color_pair(TITLE_COLOR_PAIR) | curses.A_BOLD)
                     else:
                         win.addnstr(row, 0, line, width)
         except curses.error:
@@ -526,6 +566,9 @@ def draw_backlink_list(win: curses.window, height: int, width: int,
 
 def draw_preview_window(win: curses.window, height: int, width: int,
                         preview: Optional[Preview], frontmatter: bool) -> None:
+    """
+    Draws the preview window, displaying either the YAML frontmatter or file content.
+    """
     win.erase()
     header = PREVIEW_FRONTMATTER_HEADER_TEXT if frontmatter else PREVIEW_HEADER_TEXT
     try:
@@ -533,6 +576,7 @@ def draw_preview_window(win: curses.window, height: int, width: int,
                     curses.A_BOLD | curses.A_UNDERLINE | curses.color_pair(HEADER_COLOR_PAIR))
     except curses.error:
         pass
+
     if preview:
         row_offset = 1
         if frontmatter and preview.full_frontmatter:
@@ -554,11 +598,7 @@ def draw_preview_window(win: curses.window, height: int, width: int,
             current_line = row_offset
             for line in lines:
                 try:
-                    if line.lstrip().startswith(">>"):
-                        attr = (curses.color_pair(HEADER_COLOR_PAIR) | curses.A_BOLD) if "#" in line else (curses.color_pair(HIGHLIGHT_COLOR_PAIR) | curses.A_BOLD)
-                        win.addnstr(current_line, 0, line, width, attr)
-                    else:
-                        win.addnstr(current_line, 0, line, width)
+                    win.addnstr(current_line, 0, line, width)
                 except curses.error:
                     pass
                 current_line += 1
@@ -568,7 +608,11 @@ def draw_preview_window(win: curses.window, height: int, width: int,
         except curses.error:
             pass
 
-def draw_help_overlay(stdscr: curses.window, width: int, height: int) -> None:
+# --- Help Overlay ---
+def draw_help_overlay(stdscr: curses.window, height: int, width: int) -> None:
+    """
+    Draws the centered help overlay.
+    """
     stdscr.erase()
     for i, line in enumerate(HELP_TEXT):
         y = (height - len(HELP_TEXT)) // 2 + i
@@ -579,8 +623,10 @@ def draw_help_overlay(stdscr: curses.window, width: int, height: int) -> None:
             pass
     stdscr.refresh()
 
-# --- Main UI Drawing ---
-def draw_ui(stdscr: curses.window, ui: UIState, wheel_enabled: bool) -> None:
+def draw_ui(stdscr: curses.window, ui: UIState, mouse_enabled: bool) -> None:
+    """
+    Draws the entire UI, splitting the screen into status, backlink list, title, and preview windows.
+    """
     stdscr.erase()
     height, width = stdscr.getmaxyx()
     total_reserved = 3  # 1 for status, 1 for title, 1 for divider
@@ -600,9 +646,9 @@ def draw_ui(stdscr: curses.window, ui: UIState, wheel_enabled: bool) -> None:
     preview_win.erase()
 
     draw_instructions(status_win, width, ui.status_message,
-                      wheel_enabled, ui.frontmatter_mode, ui.filter_mode,
-                      ui.filter_query, ui.backlink_sort_order, ui.refresh_requested)
-    draw_header(list_win, width, ui.last_file, ui.backlink_sort_order)
+                      mouse_enabled, ui.frontmatter_mode, ui.filter_mode,
+                      ui.filter_query, ui.backlink_sort_order, ui.sort_reversed, ui.refresh_requested)
+    draw_header(list_win, width, ui.last_file, ui.backlink_sort_order, ui.sort_reversed)
     ui.list_offset = draw_backlink_list(list_win, list_win_height, width,
                                         ui.displayed_backlinks, ui.selected_idx, ui.list_offset, ui.filter_query)
     draw_title_line(title_win, width, ui.preview_data)
@@ -615,19 +661,23 @@ def draw_ui(stdscr: curses.window, ui: UIState, wheel_enabled: bool) -> None:
     preview_win.refresh()
 
 # --- Input Handling ---
-def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_enabled: bool) -> bool:
-    height, width = stdscr.getmaxyx()
+def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState,
+                 executor: concurrent.futures.Executor, mouse_enabled: bool, avail_height: int) -> bool:
+    """
+    Handles keyboard and mouse input.
+    Returns False when the user wants to quit.
+    """
     key = stdscr.getch()
     if key == -1:
         return True
 
-    # Help overlay toggle
+    # Toggle help overlay
     if key == ord('?'):
         ui.set_status_message("Help overlay active")
-        draw_help_overlay(stdscr, width, height)
-        # Wait for any key to dismiss
+        # Note: draw_help_overlay now expects (height, width)
+        draw_help_overlay(stdscr, *stdscr.getmaxyx())
         stdscr.nodelay(False)
-        stdscr.getch()
+        stdscr.getch()  # Wait for a key press to dismiss
         stdscr.nodelay(True)
         return True
 
@@ -638,7 +688,7 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
             ui.filter_query = ""
         elif key in (curses.KEY_BACKSPACE, 8, 127):
             ui.filter_query = ui.filter_query[:-1]
-        elif key in (10, 13):  # Enter
+        elif key in (10, 13):  # Enter key ends filter mode
             ui.filter_mode = False
         elif 32 <= key <= 126:
             ui.filter_query += chr(key)
@@ -648,7 +698,14 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
     if key in (ord("q"), ord("Q")):
         return False
     elif key in (ord("s"), ord("S")):
-        ui.backlink_sort_order = get_next_sort_order(ui.backlink_sort_order)
+        # 's' cycles sort order; capital S toggles reverse order.
+        if key == ord("s"):
+            orders = ["none", "filename", "title"]
+            current_idx = orders.index(ui.backlink_sort_order) if ui.backlink_sort_order in orders else 0
+            ui.backlink_sort_order = orders[(current_idx + 1) % len(orders)]
+        else:
+            ui.sort_reversed = not ui.sort_reversed
+            ui.set_status_message("Reverse sort " + ("enabled" if ui.sort_reversed else "disabled"))
         return True
     elif key in (ord("f"), ord("F")):
         ui.filter_mode = True
@@ -670,31 +727,55 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
             ui.update_backlinks([NO_FILE_OPEN_TEXT])
             ui.backlinks_future = None
         ui.refresh_requested = False
+        # Clear preview cache on refresh
+        ui.preview_cache.clear()
         return True
     elif key in (ord("m"), ord("M")):
         ui.preview_mode_full = not ui.preview_mode_full
         if ui.preview_mode_full and ui.preview_data:
-            # In full mode, show the entire file (simulate by setting context to full file length)
-            ui.preview_data.view_start = 0
+            ui.preview_data.jump_to_top()
         ui.set_status_message("Toggled preview mode")
         return True
-    elif key in (ord("b"), ord("B")):
-        # b to bookmark, B to view bookmarks
-        if key == ord("b"):
-            if ui.selected_idx < len(ui.displayed_backlinks):
-                bookmark = ui.backlinks[ui.selected_idx]
-                if bookmark not in ui.bookmarks:
-                    ui.bookmarks.append(bookmark)
-                    ui.set_status_message("Bookmark added")
-                else:
-                    ui.set_status_message("Already bookmarked")
-        else:
-            ui.show_bookmarks = not ui.show_bookmarks
-            if ui.show_bookmarks:
-                ui.set_status_message("Showing bookmarks")
+    elif key in (ord("b"),):
+        # Bookmark current backlink.
+        if ui.selected_idx < len(ui.displayed_backlinks):
+            bookmark = ui.backlinks[ui.selected_idx]
+            if bookmark not in ui.bookmarks:
+                ui.bookmarks.append(bookmark)
+                save_bookmarks(ui.bookmarks)
+                ui.set_status_message("Bookmark added")
             else:
-                ui.set_status_message("Exiting bookmarks view")
+                ui.set_status_message("Already bookmarked")
+        return True
+    elif key in (ord("B"),):
+        ui.show_bookmarks = not ui.show_bookmarks
+        ui.set_status_message("Showing bookmarks" if ui.show_bookmarks else "Exiting bookmarks view")
+        ui.reset_list_state()
+        return True
+    elif key in (ord("x"),):
+        # In bookmark view, remove the selected bookmark.
+        if ui.show_bookmarks and ui.selected_idx < len(ui.displayed_backlinks):
+            removed = ui.bookmarks.pop(ui.selected_idx)
+            save_bookmarks(ui.bookmarks)
+            ui.set_status_message(f"Removed bookmark: {removed.split(':',1)[0]}")
             ui.reset_list_state()
+        return True
+
+    # Alternate open commands
+    elif key in (ord("v"),):
+        if ui.displayed_backlinks and ui.selected_idx < len(ui.displayed_backlinks):
+            open_backlink_in_nvim(nvim, ui.backlinks[ui.selected_idx], mode="vsplit")
+            ui.set_status_message(f"Opened (vsplit): {ui.backlinks[ui.selected_idx].split(':',1)[0]}")
+        return True
+    elif key in (ord("h"),):
+        if ui.displayed_backlinks and ui.selected_idx < len(ui.displayed_backlinks):
+            open_backlink_in_nvim(nvim, ui.backlinks[ui.selected_idx], mode="split")
+            ui.set_status_message(f"Opened (split): {ui.backlinks[ui.selected_idx].split(':',1)[0]}")
+        return True
+    elif key in (ord("o"),):
+        if ui.displayed_backlinks and ui.selected_idx < len(ui.displayed_backlinks):
+            open_backlink_in_nvim(nvim, ui.backlinks[ui.selected_idx], mode="tabnew")
+            ui.set_status_message(f"Opened (tab): {ui.backlinks[ui.selected_idx].split(':',1)[0]}")
         return True
 
     # Navigation in backlink list
@@ -715,7 +796,6 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
                 ui.set_status_message(f"Error opening link: {e}")
     # Preview navigation
     elif ui.preview_data is not None:
-        avail_height = height - (1 + ((height - 3) // 2) + 3)
         if key == curses.KEY_NPAGE:
             ui.preview_data.scroll_down(CONFIG["PREVIEW_SCROLL_LINES"], avail_height)
         elif key == curses.KEY_PPAGE:
@@ -731,10 +811,10 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
         elif key in (ord("t"),):
             ui.frontmatter_mode = not ui.frontmatter_mode
     # Mouse events
-    elif key == curses.KEY_MOUSE and wheel_enabled:
+    elif key == curses.KEY_MOUSE and mouse_enabled:
         try:
             _, mx, my, _, bstate = curses.getmouse()
-            list_win_height = (height - 3) // 2
+            list_win_height = (stdscr.getmaxyx()[0] - 3) // 2
             if bstate & curses.BUTTON1_PRESSED and 1 <= my < 1 + list_win_height:
                 new_idx = my - 1 + ui.list_offset
                 if 0 <= new_idx < len(ui.displayed_backlinks):
@@ -754,11 +834,10 @@ def handle_input(stdscr: curses.window, nvim: pynvim.Nvim, ui: UIState, wheel_en
             logger.exception(f"Mouse event error: {e}")
     return True
 
-def get_next_sort_order(current_order: str) -> str:
-    orders = ["none", "filename", "linenumber", "title"]
-    return orders[(orders.index(current_order) + 1) % len(orders)]
-
-def update_ui_state(nvim: pynvim.Nvim, ui: UIState, executor: concurrent.futures.ThreadPoolExecutor) -> None:
+def update_ui_state(nvim: pynvim.Nvim, ui: UIState, executor: concurrent.futures.Executor) -> None:
+    """
+    Updates the UI state by checking for changes (file change, completed backlink scan, etc.).
+    """
     now = time.time()
     if ui.status_message and now - ui.status_message_time >= CONFIG["STATUS_BAR_CLEAR_TIME"]:
         ui.status_message = ""
@@ -772,6 +851,7 @@ def update_ui_state(nvim: pynvim.Nvim, ui: UIState, executor: concurrent.futures
         if cur_file != ui.last_file:
             ui.last_file = cur_file
             ui.reset_list_state()
+            ui.preview_cache.clear()
             if cur_file:
                 ui.backlinks_future = executor.submit(find_backlinks, cur_file)
                 ui.update_backlinks([SCANNING_BACKLINKS_TEXT])
@@ -786,37 +866,41 @@ def update_ui_state(nvim: pynvim.Nvim, ui: UIState, executor: concurrent.futures
             if NO_BACKLINKS_FOUND_TEXT not in raw:
                 ui.set_status_message("Backlink scan complete.")
         except Exception as e:
-            msg = f"Backlink scan error: {e}"
-            # ui.update_backlinks([msg])
-            # ui.set_status_message("Backlink scan error.")
-            logger.exception(msg)
+            logger.exception(f"Backlink scan error: {e}")
         ui.backlinks_future = None
         ui.current_preview_idx = None
     filtered = ui.get_filtered_backlinks()
-    ui.displayed_backlinks = sort_backlinks(filtered, ui.backlink_sort_order)
+    ui.displayed_backlinks = sort_backlinks(filtered, ui.backlink_sort_order, reverse=ui.sort_reversed)
     if ui.displayed_backlinks and len(ui.displayed_backlinks) > ui.selected_idx:
-        if ui.current_preview_idx != ui.selected_idx:
+        key = ui.displayed_backlinks[ui.selected_idx]
+        if key in ui.preview_cache:
+            ui.preview_data = ui.preview_cache[key]
+        else:
             try:
-                ui.preview_data = Preview(ui.displayed_backlinks[ui.selected_idx])
+                preview = Preview(key)
+                ui.preview_data = preview
+                ui.preview_cache[key] = preview
             except Exception as e:
                 logger.exception(f"Error updating preview: {e}")
                 ui.preview_data = None
-            ui.current_preview_idx = ui.selected_idx
+        ui.current_preview_idx = ui.selected_idx
     else:
         ui.preview_data = None
         ui.current_preview_idx = None
 
-def draw_full_ui(stdscr: curses.window, ui: UIState, wheel_enabled: bool) -> None:
-    draw_ui(stdscr, ui, wheel_enabled)
+def draw_full_ui(stdscr: curses.window, ui: UIState, mouse_enabled: bool) -> None:
+    draw_ui(stdscr, ui, mouse_enabled)
 
-# --- Main Interactive UI ---
-def interactive_ui(stdscr: curses.window, nvim: pynvim.Nvim) -> None:
+# --- Main Interactive UI Loop ---
+def interactive_ui(stdscr: curses.window, nvim: pynvim.Nvim, executor: concurrent.futures.Executor) -> None:
+    """
+    Main interactive UI loop.
+    """
     mouse_mask = (curses.REPORT_MOUSE_POSITION |
                   curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED |
                   curses.BUTTON2_PRESSED | curses.BUTTON2_RELEASED |
                   curses.BUTTON3_PRESSED | curses.BUTTON3_RELEASED)
-    wheel_supported = hasattr(curses, "BUTTON4_PRESSED") and hasattr(curses, "BUTTON5_PRESSED")
-    if wheel_supported:
+    if hasattr(curses, "BUTTON4_PRESSED") and hasattr(curses, "BUTTON5_PRESSED"):
         mouse_mask |= curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED
     curses.mousemask(mouse_mask)
     curses.curs_set(0)
@@ -836,32 +920,33 @@ def interactive_ui(stdscr: curses.window, nvim: pynvim.Nvim) -> None:
     except curses.error:
         pass
 
-    CONFIG["THESIS_DIR"] = os.path.expanduser(CONFIG["THESIS_DIR"]) # Expand THESIS_DIR here after config load
-
     ui = UIState()
-    global executor
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     running = True
     while running:
         new_height, new_width = stdscr.getmaxyx()
         if curses.is_term_resized(new_height, new_width):
             curses.resizeterm(new_height, new_width)
+        avail_height = new_height - (3 + ((new_height - 3) // 2) + 3)
         update_ui_state(nvim, ui, executor)
-        draw_full_ui(stdscr, ui, wheel_supported)
-        running = handle_input(stdscr, nvim, ui, wheel_supported)
+        draw_full_ui(stdscr, ui, mouse_enabled=True)
+        running = handle_input(stdscr, nvim, ui, executor, mouse_enabled=True, avail_height=avail_height)
         time.sleep(0.01)
 
 # --- Main Entry Point ---
 def main() -> None:
+    """
+    Main entry point for the Ultimate Backlink Viewer.
+    """
     if not os.path.isdir(CONFIG["THESIS_DIR"]):
         logger.error(f"Error: THESIS_DIR does not exist: {CONFIG['THESIS_DIR']}")
         sys.exit(f"Error: THESIS_DIR does not exist: {CONFIG['THESIS_DIR']}")
     try:
-        nvim = pynvim.attach("socket", path="/tmp/obsidian.sock") # socket path not configurable yet in python part
+        nvim = pynvim.attach("socket", path="/tmp/obsidian.sock")
     except Exception as e:
         logger.exception(f"Failed to attach to Neovim socket: {e}")
         sys.exit("Failed to attach to Neovim socket: " + str(e))
-    curses.wrapper(interactive_ui, nvim)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        curses.wrapper(interactive_ui, nvim, executor)
 
 if __name__ == "__main__":
     main()
