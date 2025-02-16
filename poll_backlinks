@@ -68,7 +68,13 @@ def load_config_yaml(config_file_path: str) -> Dict[str, Any]:
 
 CONFIG: Dict[str, Any] = load_config_yaml(CONFIG_FILE)
 CONFIG["THESIS_DIR"] = os.path.expanduser(CONFIG["THESIS_DIR"])
-LOG_FILE = CONFIG["LOG_FILE"]
+
+# Always place the log file in ~/.cache/ regardless of the CONFIG setting.
+log_filename = os.path.basename(CONFIG["LOG_FILE"])
+LOG_FILE = os.path.join(os.path.expanduser("~/.cache"), log_filename)
+
+# Ensure the ~/.cache directory exists.
+os.makedirs(os.path.expanduser("~/.cache"), exist_ok=True)
 
 # --- Logging Setup ---
 logger = logging.getLogger("UltimateBacklinkViewer")
@@ -81,6 +87,7 @@ handler = logging.handlers.RotatingFileHandler(
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
 
 # --- UI Color Pair Definitions ---
 HIGHLIGHT_COLOR_PAIR = 1
@@ -222,7 +229,7 @@ def find_backlinks(note_file: str) -> List[str]:
     abs_thesis = os.path.abspath(CONFIG["THESIS_DIR"])
     abs_note = os.path.abspath(note_file)
     if not abs_note.startswith(abs_thesis):
-        msg = (f"{BACKLINKS_HEADER_TEXT} {note_file}\n"
+        msg = (f"\n{BACKLINKS_HEADER_TEXT} {note_file}\n"
                "File is outside notes directory; no backlinks searched.")
         logger.warning(msg)
         return [msg]

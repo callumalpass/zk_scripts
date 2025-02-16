@@ -12,14 +12,14 @@ cd "$NOTES_DIR" || exit
 selection=$(
     "$PY_ZK" --index-file "index.json" --filter-tag person --fields filename aliases givenName familyName --color always \
             | fzf \
-        --bind "ctrl-e:execute[nvim \"$NOTES_DIR/{1}.md\"]" \
+        --bind "ctrl-e:execute[nvim $NOTES_DIR/{1}.md]" \
         --bind "one:accept" \
         --delimiter="::" \
         --with-nth=2,3,4 \
         --tiebreak=begin,index \
         --info=right \
         --ellipsis= --preview-label='' \
-        --preview="$BAT_COMMAND\" $NOTES_DIR/{1}.md"\
+        --preview="$BAT_COMMAND $NOTES_DIR/{1}.md"\
         --preview-window 'wrap:50%:<40(up)' \
         --ansi
 )

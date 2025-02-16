@@ -24,20 +24,21 @@ TEMPLINK=$(mktemp)
     --preview-label='' \
     --multi \
     --bind "Enter:execute[nvim --server /tmp/obsidian.sock --remote $NOTES_DIR/{+1}.md]+abort" \
-    --bind "alt-a:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "alt-a:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" --color always )" \
+    --bind "alt-e:reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" --exclude-tag literature_note --color always )" \
     --bind "alt-y:execute[echo {1} | $PY_ZK --index-file $NOTES_DIR/index.json --stdin --format-string '[[{filename}|{title}]]' --separator='' > $TEMPLINK ]+abort" \
-    --bind "ctrl-e:execute[nvim {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
-    --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$COLOR_ALWAYS\" \"$OUTPUT_PLAIN\")" \
+    --bind "ctrl-e:execute[nvim {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" --color always )" \
+    --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:(\"$PY_ZK\" --index-file \"$INDEX_FILE\" --color always )" \
     --bind "ctrl-alt-d:execute[nvim \"$NOTES_DIR/$NOTES_DIARY_SUBDIR/$(date '+%Y-%m-%d' -d tomorrow).md\";]" \
-    --bind "alt-9:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --unique-tags \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]+clear-query" \
-    --bind "alt-1:reload[rg -l {1} | sed 's/\.md$//g' | \"$PY_ZK\" --index-file \"$INDEX_FILE\" \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\" --stdin]+clear-query" \
-    --bind "alt-8:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag {1} \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]+clear-query" \
+    --bind "alt-9:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --unique-tags  --color always]+clear-query" \
+    --bind "alt-1:reload[rg -l {1} | sed 's/\.md$//g' | \"$PY_ZK\" --index-file \"$INDEX_FILE\" --color always --stdin]+clear-query" \
+    --bind "alt-8:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag {1}  --color always]+clear-query" \
     --bind "?:execute(env _TASKFZF_SHOW=keys \"$0\" {1}.md | fzf --ansi --header-lines=1 --info=hidden --bind \"?:abort\")" \
     --bind "alt-?:toggle-preview" \
-    --bind "alt-j:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag diary \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]" \
-    --bind "alt-b:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag literature_note \"$OUTPUT_PLAIN\" \"$COLOR_ALWAYS\"]" \
-    --bind "ctrl-s:reload[rg '^' --sortr modified --field-match-separator='::' --color=always --type md | sed 's/\.md//' ]" \
-    --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=\"$BAT_THEME\" --color=never --decorations=never {1}.md 2> /dev/null || bat {1}.md" \
+    --bind "alt-j:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag diary  --color always]" \
+    --bind "alt-b:reload[\"$PY_ZK\" --index-file \"$INDEX_FILE\" --filter-tag literature_note  --color always]" \
+    --bind "ctrl-s:reload[rg '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\.md//' ]" \
+    --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=\"$BAT_THEME\" --color=always --decorations=never {1}.md -H {2} 2> /dev/null || bat {1}.md " \
     --preview-window 'wrap:50%:<50(up)' \
     --ansi
 

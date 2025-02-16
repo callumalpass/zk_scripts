@@ -20,7 +20,7 @@ yamltemp=$(mktemp)
 
 cd "$ZK"
 
-fd --strip-cwd-prefix --print0 --extension md $FD_EXCLUDE_PATTERNS --print0 -E templates/ -E .zk/ | \
+fd -I --strip-cwd-prefix --print0 --extension md $FD_EXCLUDE_PATTERNS --print0 | \
 xargs -0 gawk '
   function quote(str) {
     # Simple quoting function: escape any double quotes and wrap the string in quotes.
