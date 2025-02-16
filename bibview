@@ -21,7 +21,9 @@ show_key_bindings() {
         echo -e "\033[36m"alt-y'  :'"\033[0m\033[3m""Copy path of the pdf\033[0m"
         echo -e "\033[36m"/'  :'"\033[0m\033[3m""Toggle preview\033[0m"
         echo -e "\033[36m"ctrl-t'  :'"\033[0m\033[3m""Track reading of bibliographic entry\033[0m"
-    ) | sort | column -t -s ':' -N 'Key,Action'
+        echo -e "\033[36m"alt-g'  :'"\033[0m\033[3m""Send to Gemini for humanist reading critique\033[0m"
+        echo -e "\033[36m"alt-t'  :'"\033[0m\033[3m""Translate to English\033[0m"
+) | sort | column -t -s ':' -N 'Key,Action'
     exit 0
 }
 
@@ -74,19 +76,18 @@ fzf --ansi \
     --bind "alt-b:execute[\"$BIBVIEW_OPEN_DOC_SCRIPT\" {1} obsidian ; timew start phd reading {1} ; echo {} >> \"$BIBHIST\"]+abort" \
     --info inline \
     --bind "/:toggle-preview" \
-    --bind "alt-g:execute[\"$LLM_PATH\" -t humanist-reading-critique -a \"$LIBRARY/{1}/{1}.pdf\" -o json_object 1 > \"$LIBRARY/{1}/{1}.pdf_analysis.json\" ]" \
-    --bind "alt-t:execute[\"$LLM_PATH\" -t translate_to_english -a \"$LIBRARY/{1}/{1}.pdf\"  > \"$LIBRARY/{1}/{1}.pdf_translation.md\" ]" \
+    --bind "alt-g:execute[\"$LLM_PATH\" -t humanist-reading-critique -a $LIBRARY/{1}/{1}.pdf  > $LIBRARY/{1}/{1}.pdf_analysis.md  ]" \
+    --bind "alt-t:execute[\"$LLM_PATH\" -t translate_to_english -a $LIBRARY/{1}/{1}.pdf  > $LIBRARY/{1}/{1}.pdf_translation.md ]" \
     --bind "Ctrl-a:execute[\"$ZK_SCRIPT\" -W \"$NOTES_DIR_FOR_ZK\" list --format '{{path}} | {{title}} |{{tags}}' \`rg {1}  \"$NOTES_DIR_FOR_ZK\" -l || echo 'error'\` | ~/mybin/rgnotesearch ]" \
-    --bind "ctrl-f:execute[nnn \"$LIBRARY/{1}\"]" \
+    --bind "ctrl-f:execute[nnn \"$LIBRARY/\"{1}]" \
     --bind "ctrl-r:execute[~/mybin/addToReadingList {1} ]"\
-    --bind "Ctrl-e:execute[nvim --server \"$OBSIDIAN_SOCKET\" --remote  \"$LIBRARY/../@{1}.md\"]"\
-    --bind "alt-y:execute[echo \"$LIBRARY/{1}/{1}.pdf\" | tr -d \"'\" | wl-copy ]+abort" \
+    --bind "Ctrl-e:execute[nvim --server \"$OBSIDIAN_SOCKET\" --remote  $LIBRARY/../@{1}.md]"\
     --bind "alt-z:execute[\"$LINK_ZATHURA_TMP_SCRIPT\" {1}]" \
     --bind "Ctrl-y:execute[echo {+1} | wl-copy ]+abort" \
     --bind "Ctrl-t:execute[timew start phd reading {1}]+abort" \
     --bind "Ctrl-space:execute[ \"$BIBVIEW_OPEN_DOC_SCRIPT\" {1} evince ; timew start phd reading {1} ; echo {1} >> \"$BIBHIST\"]" \
-    --bind "Ctrl-z:execute[hyprctl dispatch exec  evince \" $LIBRARY/{1}/{1}.**\" ; timew start phd reading {1} ; echo {1} >> \"$BIBHIST\"]+abort" \
+    --bind "Ctrl-z:execute[hyprctl dispatch exec  evince \" $LIBRARY/{1}/{1}.**\" ; echo {1} >> \"$BIBHIST\"]+abort" \
     --bind "?:execute(env _TASKFZF_SHOW=keys \"$0\" | fzf --ansi --header=Help --header-first --info=hidden --bind \"?:abort\")" \
-    --bind "Enter:execute[\"$BIBVIEW_OPEN_DOC_SCRIPT\" {1} obsidian ; timew start phd reading {1} ; echo {} >> \"$BIBHIST\"]+abort" \
-    --preview "ls --color=always -c -l -h \"$LIBRARY/{1}/\"; echo '\nCited in:'  ;  rg {1}  \"$NOTES_DIR_FOR_ZK\" -l --type markdown || echo 'error' ;  bat --theme=\"$BAT_THEME\" ~/Dropbox/notes/@{1}.md 2> /dev/null " \
+    --bind "Enter:execute[\"$BIBVIEW_OPEN_DOC_SCRIPT\" {1} obsidian ; echo {} >> \"$BIBHIST\"]+abort" \
+    --preview "ls --color=always -c -l -h $LIBRARY/{1}/; echo '\nCited in:'  ;  rg {1}  \"$NOTES_DIR_FOR_ZK\" -l --type markdown || echo 'error' ;  bat --theme=\"$BAT_THEME\" ~/Dropbox/notes/@{1}.md 2> /dev/null " \
     <<< "$formatted_data"
