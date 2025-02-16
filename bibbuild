@@ -1,0 +1,52 @@
+#!/bin/zsh
+
+# Description: This script generates a bibliography JSON file from Markdown files.
+
+# Define the script paths and output files for easy future changes
+getbibkeys_script=~/mybin/getbibkeys.sh
+biblib_dir=~/Dropbox/notes/biblib
+notes_dir=~/Dropbox/notes
+citekeylist_file=citekeylist
+bibliography_file=bibliography.json
+tmpBib=$(mktemp)
+
+# Define a function to handle potential errors
+error_handler() {
+  echo "An error occurred in the script execution. Exiting now."
+  exit 1
+}
+
+# Trap any errors and call the error handler function
+trap error_handler ERR
+
+# Check if the required directories exist
+if [[ ! -d "$biblib_dir" || ! -d "$notes_dir" ]]; then
+  echo "Required directories do not exist. Please check the paths."
+  exit 1
+fi
+
+# Run the getbibkeys script and output to both files
+if [[ -x "$getbibkeys_script" ]]; then
+  "$getbibkeys_script" > "$biblib_dir/$citekeylist_file"
+  cp "$biblib_dir/$citekeylist_file" "$notes_dir/$citekeylist_file.md"
+else
+  echo "The getbibkeys script is not executable. Please check the path and permissions."
+  exit 1
+fi
+
+# Add "@" at the start of each line in the citekeylist file located in the notes directory
+sed -i 's/^/@/' "$notes_dir/$citekeylist_file.md"
+
+# Process Markdown files and generate the bibliography JSON
+    
+jq '[ .[] |  select(.tags[]? | startswith("literature_note"))]' ~/Dropbox/notes/index.json > $tmpBib
+
+
+# Copy the generated bibliography JSON to the specified locations
+cp "$tmpBib" "$biblib_dir/$bibliography_file"
+cp "$tmpBib" ~/Dropbox/bibliography.json
+
+# Remove the temporary file
+rm "$tmpBib"
+
+echo "Script executed successfully."
