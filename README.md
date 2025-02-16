@@ -1,6 +1,7 @@
 # zk-scripts: Enhanced Zettelkasten Workflow with fzf and Python
 
-This repository provides a collection of scripts designed to enhance a Zettelkasten workflow, primarily focused on integration with Neovim, fzf, and a Python-based note indexer. These scripts are built to streamline note-taking, searching, backlink management, and bibliographic entry handling within a plain text Markdown note system.
+This repository provides a collection of scripts designed to enhance a Zettelkasten workflow, primarily focused on integration with Neovim, tmux, fzf, and a Python-based note index reader. These scripts are built to streamline note-taking, searching, backlink management, and bibliographic entry handling within a plain text Markdown note system.
+
 
 ## Overview
 
@@ -26,7 +27,6 @@ The scripts are designed to work together to provide a powerful and efficient no
 
 Before using these scripts, ensure you have the following software installed and accessible in your `PATH`:
 
-- **Bash**:  (Generally pre-installed on most Linux/macOS systems)
 - **Python 3**: (With `pynvim`, `pyyaml`, `tabulate`, and `curses` libraries: `pip install pynvim pyyaml tabulate curses-curses`)
 - **fzf**:  Fuzzy finder: [https://github.com/junegunn/fzf](https://github.com/junegunn/fzf)
 - **rg (ripgrep)**:  Fast line-oriented search tool: [https://github.com/BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep)
@@ -39,11 +39,7 @@ Before using these scripts, ensure you have the following software installed and
 - **evince/qpdfview/zathura/other PDF viewer**: For opening PDF documents (used in `bibview`).
 - **tmux**:  Terminal multiplexer (optional, for `zk_fzf` and `personSearch` to send links to tmux).
 - **Neovim**:  Modern text editor (required for most scripts): [https://neovim.io/](https://neovim.io/)
-- **Obsidian (or similar notes application with socket support)**:  While scripts are designed for plain text notes, they assume Neovim integration via a socket (e.g., for Obsidian's remote commands).
-- **wl-copy (or xclip/xsel)**:  Command-line clipboard utility for copying text (if you want clipboard integration).
-- **timewarrior**: Time tracking command-line tool (optional, for `bibview` reading tracking): [https://timewarrior.net/](https://timewarrior.net/)
 - **simonw-llm (or similar LLM CLI tool)**: Command-line interface to language models (optional, for advanced `bibview` features): [https://llm.datasette.io/en/stable/](https://llm.datasette.io/en/stable/)
-- **zk (Zettelkasten CLI)**: Command-line Zettelkasten manager (optional, for `bibview` integration): [https://github.com/mickael-menu/zk](https://github.com/mickael-menu/zk)
 
 ## Configuration
 
@@ -77,7 +73,6 @@ bibview:
   bibliography_json: "{{.library}}/bibliography.json"
   bibview_open_doc_script: "{{.mybin_dir}}/bibview.openDocument"
   llm_path: "{{.mybin_dir}}/simonw-llm/venv/bin/llm"
-  zk_script: "zk"
   add_to_reading_list_script: "{{.mybin_dir}}/addToReadingList"
   link_zathura_tmp_script: "{{.mybin_dir}}/linkZathuraTmp"
   obsidian_socket: "/tmp/obsidian.sock"
@@ -107,7 +102,6 @@ personSearch:
 - **`bibliography_json`**: Path to your `bibliography.json` file.
 - **`bibview_open_doc_script`**: Path to a script to open documents in `bibview` (not provided in the scripts, you might need to create this).
 - **`llm_path`**: Path to your `llm` command-line tool.
-- **`zk_script`**:  Command for your `zk` Zettelkasten CLI tool.
 - **`add_to_reading_list_script`**: Path to a script to add to your reading list (not provided in the scripts).
 - **`link_zathura_tmp_script`**: Path to a script to link with Zathura (not provided in the scripts).
 - **`obsidian_socket`**: Path to your Obsidian socket (or Neovim server socket).
