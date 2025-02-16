@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-CONFIG_FILE="/home/calluma/.config/zk_scripts/config.yaml"
+CONFIG_FILE="$HOME/.config/zk_scripts/config.yaml"
 
-source /home/calluma/mybin/config_loader.sh
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+source "$SCRIPT_DIR/config_loader.sh"
 
 load_config "$CONFIG_FILE" "bibview" # Call load_config with config file and script section name
 

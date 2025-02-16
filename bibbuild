@@ -1,13 +1,18 @@
-#!/bin/zsh
+#!/bin/bash
 
-# Description: This script generates a bibliography JSON file from Markdown files.
+CONFIG_FILE="$HOME/.config/zk_scripts/config.yaml"
 
-# Define the script paths and output files for easy future changes
-getbibkeys_script=~/mybin/getbibkeys.sh
-biblib_dir=~/Dropbox/notes/biblib
-notes_dir=~/Dropbox/notes
-citekeylist_file=citekeylist
-bibliography_file=bibliography.json
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+source "$SCRIPT_DIR/config_loader.sh"
+
+load_config "$CONFIG_FILE" "zk_fzf" # Load config for bibbuild section (if any)
+
+# Use configured variables, with defaults if not in config
+getbibkeys_script="${MYBIN_DIR}/getbibkeys.sh"  # Default to mybin_dir/getbibkeys.sh if not configured
+biblib_dir="${LIBRARY:-$NOTES_DIR/biblib}"      # Default to notes_dir/biblib if LIBRARY not set in config
+notes_dir="${NOTES_DIR}"                        # notes_dir is essential, ensure it's configured
+citekeylist_file="citekeylist"
+bibliography_file="bibliography.json"
 tmpBib=$(mktemp)
 
 # Define a function to handle potential errors
@@ -21,7 +26,9 @@ trap error_handler ERR
 
 # Check if the required directories exist
 if [[ ! -d "$biblib_dir" || ! -d "$notes_dir" ]]; then
-  echo "Required directories do not exist. Please check the paths."
+  echo "Required directories do not exist. Please check the paths:"
+  echo "  biblib_dir: $biblib_dir"
+  echo "  notes_dir: $notes_dir"
   exit 1
 fi
 
@@ -30,7 +37,8 @@ if [[ -x "$getbibkeys_script" ]]; then
   "$getbibkeys_script" > "$biblib_dir/$citekeylist_file"
   cp "$biblib_dir/$citekeylist_file" "$notes_dir/$citekeylist_file.md"
 else
-  echo "The getbibkeys script is not executable. Please check the path and permissions."
+  echo "The getbibkeys script is not executable or not found at: $getbibkeys_script"
+  echo "Please check the path and permissions, or configure it in config.yaml."
   exit 1
 fi
 
@@ -38,15 +46,15 @@ fi
 sed -i 's/^/@/' "$notes_dir/$citekeylist_file.md"
 
 # Process Markdown files and generate the bibliography JSON
-    
-jq '[ .[] |  select(.tags[]? | startswith("literature_note"))]' ~/Dropbox/notes/index.json > $tmpBib
 
+jq '[ .[] |  select(.tags[]? | startswith("literature_note"))]' "$INDEX_FILE" > $tmpBib # Use INDEX_FILE from config
 
 # Copy the generated bibliography JSON to the specified locations
 cp "$tmpBib" "$biblib_dir/$bibliography_file"
-cp "$tmpBib" ~/Dropbox/bibliography.json
+cp "$tmpBib" "$HOME/Dropbox/bibliography.json" # Still using hardcoded Dropbox path, consider making this configurable
 
 # Remove the temporary file
 rm "$tmpBib"
 
 echo "Script executed successfully."
+
