@@ -299,14 +299,17 @@ def main() -> None:
 
     # Determine files to reprocess: either forced by full reindex or whose modification time is newer.
     files_to_process = []
-    for filepath in markdown_files:
-        try:
-            mod_time = os.path.getmtime(filepath)
-            current_index_state[filepath] = mod_time
-            if args.full_reindex or filepath not in previous_index_state or previous_index_state.get(filepath, 0) < mod_time:
-                files_to_process.append(filepath)
-        except OSError as e:
-            logger.warning(f"File disappeared or error accessing: {filepath}. Error: {e}")
+    with tqdm(total=len(markdown_files), desc="Checking file modifications") as mod_pbar: # ADDED PROGRESS BAR HERE
+        for filepath in markdown_files:
+            try:
+                mod_time = os.path.getmtime(filepath)
+                current_index_state[filepath] = mod_time
+                if args.full_reindex or filepath not in previous_index_state or previous_index_state.get(filepath, 0) < mod_time:
+                    files_to_process.append(filepath)
+            except OSError as e:
+                logger.warning(f"File disappeared or error accessing: {filepath}. Error: {e}")
+            mod_pbar.update(1) # Update modification check progress bar
+
 
     if args.verbose:
         logger.info(f"Files to process: {len(files_to_process)}")
