@@ -10,6 +10,14 @@ Incremental Fast ZK indexer
 • Converts any YAML dates to ISO strings for JSON output.
 • Incremental indexing by checking file modification times.
 • Handles deleted notes by removing them from the index.
+
+Command line arguments:
+  --notes-dir <path>     : Override notes directory from config or default.
+  --index-file <path>    : Override index file path from config or default.
+  --config-file <path>   : Specify a different config file path.
+  --full-reindex, -f     : Force a full reindex, ignoring modification times and removing index state.
+  --exclude-patterns <str>: Override exclude patterns from config or default (space-separated, e.g., "templates/ .zk/").
+  --verbose, -v          : Increase verbosity of output.
 """
 
 import os
@@ -17,6 +25,7 @@ import re
 import sys
 import json
 import yaml
+import argparse
 from datetime import date
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -32,11 +41,10 @@ def resolve_config_value(config, key_path, default_value):
         if isinstance(current, dict) and key in current:
             current = current[key]
         else:
-            print(f"Warning: '{key_path}' missing in config; using default: {default_value}", file=sys.stderr)
             return default_value
     return current
 
-def load_config(config_file, script_config_section):
+def load_config(config_file):
     if not os.path.exists(config_file):
         print(f"Warning: Config file '{config_file}' not found. Using defaults.", file=sys.stderr)
         return {}
@@ -53,7 +61,7 @@ def json_ready(data):
     if isinstance(data, date):
         return data.isoformat()
     elif isinstance(data, dict):
-        return {k: json_ready(v) for k,v in data.items()}
+        return {k: json_ready(v) for k, v in data.items()}
     elif isinstance(data, list):
         return [json_ready(item) for item in data]
     else:
@@ -69,9 +77,7 @@ def scandir_recursive(root, exclude_patterns=None):
     try:
         with os.scandir(root) as it:
             for entry in it:
-                # Check if the entry's full path should be excluded
                 if any(pattern in entry.path for pattern in exclude_patterns):
-                    # Skip this file or directory completely.
                     continue
                 if entry.is_file():
                     paths.append(entry.path)
@@ -81,15 +87,15 @@ def scandir_recursive(root, exclude_patterns=None):
         pass
     return paths
 
-def process_markdown_file(filepath, fd_exclude_patterns):
+def process_markdown_file(filepath, fd_exclude_patterns, notes_dir):
     """
     Process one markdown file:
       - Skips file if its path contains any fd_exclude_patterns (defensive check).
       - Reads the entire file.
       - If file begins with '---', then treat the next block as YAML front matter.
       - Extract wikilinks via precompiled regex.
-      - Return a dict with filename (without extension), outgoing_links,
-        and any YAML front matter (converted with json_ready).
+      - Return a dict with a unique identifier (the relative (to notes_dir) filename without extension),
+        outgoing_links, and any YAML front matter (converted with json_ready).
     """
     # Defensive check (should have been filtered during scanning)
     for pat in fd_exclude_patterns:
@@ -99,12 +105,14 @@ def process_markdown_file(filepath, fd_exclude_patterns):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-    except Exception:
+    except Exception as e:
+        print(f"Error reading file {filepath}: {e}", file=sys.stderr)
         return None
 
-    name_noext = os.path.splitext(os.path.basename(filepath))[0]
+    # Use the relative path (without extension) as the unique identifier.
+    rel_path = os.path.relpath(filepath, notes_dir)
+    name_noext = os.path.splitext(rel_path)[0]
 
-    # Only attempt YAML splitting if the file actually starts with front matter.
     if content.startswith('---'):
         # Split only into three parts (avoid splitting the rest of the file)
         parts = content.split('---', 2)
@@ -117,7 +125,8 @@ def process_markdown_file(filepath, fd_exclude_patterns):
                     meta = json_ready(meta)
                 else:
                     meta = {}
-            except yaml.YAMLError:
+            except yaml.YAMLError as e:
+                print(f"YAML error in file {filepath}: {e}", file=sys.stderr)
                 meta = {}
         else:
             body = content
@@ -126,7 +135,6 @@ def process_markdown_file(filepath, fd_exclude_patterns):
         body = content
         meta = {}
 
-    # Extract wikilinks; using a set here to avoid duplicates.
     outgoing_links = []
     seen = set()
     for link in WIKILINK_RE.findall(body):
@@ -145,7 +153,8 @@ def load_index_state(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"Warning: Error loading index state from '{state_file}': {e}. Starting fresh.", file=sys.stderr)
             return {}
     return {}
 
@@ -155,30 +164,55 @@ def save_index_state(state_file, index_state):
         with open(state_file, 'w', encoding='utf-8') as f:
             json.dump(index_state, f, indent=2)
     except Exception as e:
-        print(f"Error writing index state file: {e}", file=sys.stderr)
+        print(f"Error writing index state file '{state_file}': {e}", file=sys.stderr)
 
 def main():
-    config = load_config(CONFIG_FILE, "zk_index")
+    parser = argparse.ArgumentParser(description="Incremental Fast ZK indexer")
+    parser.add_argument("--notes-dir", help="Override notes directory")
+    parser.add_argument("--index-file", help="Override index file path")
+    parser.add_argument("--config-file", default=CONFIG_FILE, help="Specify config file path")
+    parser.add_argument("--full-reindex", "-f", action="store_true", help="Force full reindex, removing index state.")
+    parser.add_argument("--exclude-patterns", help="Override exclude patterns (space-separated)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Increase verbosity")
 
-    # Default values if not set in config.
-    notes_dir_default = "/home/calluma/Dropbox/notes"
+    args = parser.parse_args()
+
+    config = load_config(args.config_file)
+
+    # Default values if not set in config or command line.
+    notes_dir_default = "/home/calluma/Dropbox/notes"  # Adjust as needed
     index_file_default = os.path.join(notes_dir_default, "index.json")
-    # Patterns to exclude. They will be applied both in file scanning and in file processing.
     fd_exclude_patterns_default = ["templates/", ".zk/"]
 
-    notes_dir = resolve_config_value(config, "notes_dir", notes_dir_default)
-    index_file = resolve_config_value(config, "zk_index.index_file", index_file_default)
-    fd_exclude_patterns_str = resolve_config_value(config, "zk_index.fd_exclude_patterns", "-E templates/ -E .zk/")
-    fd_exclude_patterns =  re.findall(r'-E\s+([^\s]+)', fd_exclude_patterns_str)
+    notes_dir = args.notes_dir or resolve_config_value(config, "notes_dir", notes_dir_default)
+    index_file = args.index_file or resolve_config_value(config, "zk_index.index_file", index_file_default)
+
+    fd_exclude_patterns_str = args.exclude_patterns or resolve_config_value(config, "zk_index.fd_exclude_patterns", "-E templates/ -E .zk/")
+    fd_exclude_patterns = re.findall(r'-E\s+([^\s]+)', fd_exclude_patterns_str)
     if not fd_exclude_patterns:
         fd_exclude_patterns = fd_exclude_patterns_default
 
     if not notes_dir:
-        print("Error: NOTES_DIR not defined.", file=sys.stderr)
+        print("Error: NOTES_DIR not defined. Please specify --notes-dir or configure it.", file=sys.stderr)
         sys.exit(1)
 
     state_file = index_file.replace(".json", "_state.json")
-    previous_index_state = load_index_state(state_file)
+
+    if args.full_reindex:
+        if os.path.exists(state_file):
+            try:
+                os.remove(state_file)
+                if args.verbose:
+                    print(f"Index state file removed: {state_file}")
+            except OSError as e:
+                print(f"Warning: Could not remove index state file '{state_file}': {e}", file=sys.stderr)
+        else:
+            if args.verbose:
+                print(f"Index state file not found, skipping removal: {state_file}")
+
+    previous_index_state = {}
+    if not args.full_reindex:  # Only load state if not full reindex
+        previous_index_state = load_index_state(state_file)
     current_index_state = {}  # To be populated and saved at the end
 
     # Load existing full index (filename-based) if available.
@@ -187,7 +221,8 @@ def main():
         try:
             with open(index_file, 'r', encoding='utf-8') as f:
                 existing_index = {item['filename']: item for item in json.load(f)}
-        except (json.JSONDecodeError, FileNotFoundError):
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"Warning: Error loading existing index from '{index_file}': {e}. Starting fresh.", file=sys.stderr)
             existing_index = {}
 
     # Locate all markdown files, filtering out those in excluded directories.
@@ -197,30 +232,40 @@ def main():
     previous_filepaths = set(previous_index_state.keys())
 
     # Identify files that have been deleted since last run.
-    deleted_files = previous_filepaths - current_filepaths
+    # (Compute the same key as in process_markdown_file: the relative file path without extension.)
+    deleted_files = []
+    for prev_fp in previous_filepaths:
+        # Reconstruct an absolute file path from previous state if possible.
+        # Since our state keys are full filepaths, we simply check if they are still present.
+        if prev_fp not in current_filepaths:
+            deleted_files.append(prev_fp)
     for deleted in deleted_files:
-        fname = os.path.splitext(os.path.basename(deleted))[0]
-        if fname in existing_index:
-            del existing_index[fname]
-        print(f"Note deleted: {deleted}")
+        # Compute the key as relative file path without extension.
+        key = os.path.splitext(os.path.relpath(deleted, notes_dir))[0]
+        if key in existing_index:
+            del existing_index[key]
+        if args.verbose:
+            print(f"Note deleted: {deleted}")
 
-    # Decide which files need processing, comparing modification times.
+    # Decide which files need processing, comparing modification times (unless full reindex).
     files_to_process = []
     for filepath in markdown_files:
         try:
             mod_time = os.path.getmtime(filepath)
             current_index_state[filepath] = mod_time  # update mod time in current state
-            if filepath not in previous_index_state or previous_index_state[filepath] < mod_time:
+            if args.full_reindex or filepath not in previous_index_state or previous_index_state.get(filepath, 0) < mod_time:
                 files_to_process.append(filepath)
         except OSError:
-            # If the file vanishes between scanning and checking mod time, ignore it.
             print(f"Warning: File disappeared: {filepath}", file=sys.stderr)
+
+    if args.verbose:
+        print(f"Files to process: {len(files_to_process)}")
 
     # Process files in parallel.
     with ProcessPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(process_markdown_file, fp, fd_exclude_patterns): fp for fp in files_to_process}
+        # Pass notes_dir to allow relative path computation.
+        futures = {executor.submit(process_markdown_file, fp, fd_exclude_patterns, notes_dir): fp for fp in files_to_process}
         for future in as_completed(futures):
-            filepath = futures[future]
             result = future.result()
             if result:
                 existing_index[result['filename']] = result
@@ -232,11 +277,14 @@ def main():
             json.dump(updated_index_data, outf, indent=2)
         print(f"Index file updated at: {index_file}")
     except Exception as e:
-        print(f"Error writing index file: {e}", file=sys.stderr)
+        print(f"Error writing index file '{index_file}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    save_index_state(state_file, current_index_state)
-
+    # Save state only in non-full reindex mode.
+    if not args.full_reindex:
+        save_index_state(state_file, current_index_state)
+    elif args.verbose:
+        print("Skipping saving state file because of full reindex.")
 
 if __name__ == "__main__":
     main()
