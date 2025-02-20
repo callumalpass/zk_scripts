@@ -283,6 +283,8 @@ def main() -> None:
     existing_index = load_existing_index(index_file)
 
     # Get all markdown files under notes_dir (excluding dirs based on fd_exclude_patterns)
+    if args.verbose:
+        logger.info(f"Scanning files")
     markdown_files = [fp for fp in scandir_recursive(notes_dir, exclude_patterns=fd_exclude_patterns)
                       if fp.lower().endswith(".md")]
     current_filepaths = set(markdown_files)
