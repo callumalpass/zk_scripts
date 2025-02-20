@@ -235,11 +235,31 @@ def filter_by_filename_contains(notes: List[Note], substring: str) -> List[Note]
     return [note for note in notes if substring in note.filename]
 
 
+def parse_iso_datetime(dt_str: str) -> Optional[datetime.datetime]:
+    """
+    Parse an ISO formatted datetime string (e.g. "2023-10-12T14:23:45" or "2023-10-12T14:23:45Z").
+    If a trailing "Z" is present, it is removed. Make the datetime object offset-naive.
+    Returns None if parsing fails.
+    """
+    if not dt_str:
+        return None
+    try:
+        # Remove trailing 'Z' if present.
+        if dt_str.endswith('Z'):
+            dt_str = dt_str[:-1]
+        # fromisoformat expects a string in ISO 8601 format.
+        dt = datetime.datetime.fromisoformat(dt_str)
+        # Make the datetime object offset-naive
+        return dt.replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None,
                          end_date_str: Optional[str] = None) -> List[Note]:
     """
-    Filter notes by dateModified value. The dates must be provided as "YYYY-MM-DD" strings.
-    The function attempts to parse note.dateModified using known formats.
+    Filter notes by dateModified value.
+    The dates must be provided as "YYYY-MM-DD" strings.
     """
     filtered = []
     start_date = end_date = None
@@ -253,16 +273,11 @@ def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None
         return []
     for note in notes:
         if note.dateModified:
-            note_date = None
-            for fmt in ('%Y%m%d%H%M%S', '%Y-%m-%d'):
-                try:
-                    note_date = datetime.datetime.strptime(note.dateModified, fmt).date()
-                    break
-                except ValueError:
-                    continue
-            if note_date is None:
+            note_dt = parse_iso_datetime(note.dateModified)
+            if not note_dt:
                 logging.warning(f"Could not parse dateModified for '{note.filename}' from '{note.dateModified}'. Skipping for date filtering.")
                 continue
+            note_date = note_dt.date()
             if start_date and note_date < start_date:
                 continue
             if end_date and note_date > end_date:
@@ -310,14 +325,9 @@ def get_index_info(index_file: str) -> Dict[str, Any]:
             if note.outgoing_links:
                 notes_with_outgoing_links += 1
             if note.dateModified:
-                note_date = None
-                for fmt in ('%Y%m%d%H%M%S', '%Y-%m-%d'):
-                    try:
-                        note_date = datetime.datetime.strptime(note.dateModified, fmt).date()
-                        break
-                    except ValueError:
-                        continue
-                if note_date:
+                dt = parse_iso_datetime(note.dateModified)
+                if dt:
+                    note_date = dt.date()
                     if min_date is None or note_date < min_date:
                         min_date = note_date
                     if max_date is None or note_date > max_date:
@@ -498,20 +508,16 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
 
 
 def sort_data(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
-    """Sort the notes based on the specified field. For dateModified, a proper datetime is used."""
+    """Sort the notes based on the specified field. For dateModified, we use proper datetime parsing."""
     if sort_by == 'filename':
         return sorted(notes, key=lambda n: n.filename)
     elif sort_by == 'title':
         return sorted(notes, key=lambda n: n.title or "")
     elif sort_by == 'dateModified':
-        def to_date(note: Note):
-            for fmt in ('%Y%m%d%H%M%S', '%Y-%m-%d'):
-                try:
-                    return datetime.datetime.strptime(note.dateModified, fmt)
-                except ValueError:
-                    continue
-            return datetime.datetime.min
-        return sorted(notes, key=to_date, reverse=True)
+        def note_date(note: Note):
+            dt = parse_iso_datetime(note.dateModified)
+            return dt if dt else datetime.datetime.min
+        return sorted(notes, key=note_date, reverse=True)
     elif sort_by == 'word_count':
         return sorted(notes, key=lambda n: n.word_count, reverse=True)
     elif sort_by == 'file_size':
@@ -572,7 +578,7 @@ def main():
     filter_group.add_argument('--filter-backlink', type=str, help='Filter notes that are backlinked from a note with the given filename.')
     filter_group.add_argument('--filter-outgoing-link', type=str, help='Filter notes that link to a note with the given filename (via outgoing_links).')
     filter_group.add_argument('--date-start', type=str, help='Filter notes modified on or after this date (YYYY-MM-DD).')
-    filter_group.add_argument('--date-end', type=str, help='Filter notes modified on or before this date (YYYY-MM-DD).')
+    parser.add_argument('--date-end', type=str, help='Filter notes modified on or before this date (YYYY-MM-DD).')
     filter_group.add_argument('--filter-field', type=str, nargs=2, metavar=('FIELD', 'VALUE'),
                               help='Filter notes where FIELD exactly matches VALUE.')
 
