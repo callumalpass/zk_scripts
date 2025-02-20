@@ -19,13 +19,10 @@ fi
 ZK="$NOTES_DIR"
 INDEX="$INDEX_FILE" # Use configured INDEX_FILE
 
-yamltemp=$(mktemp)
-# trap 'rm -f "$yamltemp"' EXIT
-
 cd "$ZK"
 
 fd -I --strip-cwd-prefix --print0 --extension md $FD_EXCLUDE_PATTERNS --print0 | \
-xargs -0 gawk '
+xargs -0 -P "$(nproc)" gawk '
   function quote(str) {
     # Simple quoting function: escape any double quotes and wrap the string in quotes.
     gsub(/"/, "\\\"", str);
@@ -105,10 +102,9 @@ xargs -0 gawk '
       print "  outgoing_links: []";
     }
   }
-' > "$yamltemp"
-
+  '  | yq -o=json > "$INDEX"
 # Optionally archive a YAML version for reference.
 # cp "$yamltemp" "$INDEX_YAML_FILE" # Use configured INDEX_YAML_FILE
 
-yq -o=json "$yamltemp"  > "$INDEX"
+
 
