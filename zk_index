@@ -85,25 +85,24 @@ xargs -0 gawk '
 
   ENDFILE {
     # Begin a new YAML document.
-    print "---";
-    print "filename: " quote(fname);
+    print "- filename: " quote(fname);
 
     # Instead of wrapping front matter in a key, output it directly.
     if (got_yaml) {
       n = split(yaml_content, lines, "\n");
       for (i = 1; i <= n; i++) {
          if (length(lines[i]) > 0)
-            print lines[i];
+            print "  " lines[i];
       }
     }
 
     if (link_count > 0) {
-      print "outgoing_links:";
+      print "  outgoing_links:";
       for (i = 1; i <= link_count; i++) {
          print "  - " quote(links[i]);
       }
     } else {
-      print "outgoing_links: []";
+      print "  outgoing_links: []";
     }
   }
 ' > "$yamltemp"
@@ -111,5 +110,5 @@ xargs -0 gawk '
 # Optionally archive a YAML version for reference.
 # cp "$yamltemp" "$INDEX_YAML_FILE" # Use configured INDEX_YAML_FILE
 
-yq -o=json "$yamltemp" | jq -s '.' > "$INDEX"
+yq -o=json "$yamltemp"  > "$INDEX"
 
