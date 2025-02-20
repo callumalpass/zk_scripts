@@ -311,32 +311,38 @@ def main() -> None:
     if args.verbose:
         logger.info(f"Files to process: {len(files_to_process)}")
 
-    # Process updated markdown files in parallel.
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(process_markdown_file, fp, fd_exclude_patterns, notes_dir): fp for fp in files_to_process}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing files"):
-            filepath = futures[future]
-            try:
-                result = future.result()
-                if result:
-                    # Update (or add) the note, keyed by its relative filename (without extension).
-                    existing_index[result['filename']] = result
-            except Exception as e:
-                logger.error(f"Error processing file {filepath} in worker process: {e}")
+    # --- Progress bar for file processing ---
+    with tqdm(total=len(files_to_process), desc="Processing files") as file_pbar:
+        # Process updated markdown files in parallel.
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(process_markdown_file, fp, fd_exclude_patterns, notes_dir): fp for fp in files_to_process}
+            for future in as_completed(futures):
+                filepath = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        # Update (or add) the note, keyed by its relative filename (without extension).
+                        existing_index[result['filename']] = result
+                except Exception as e:
+                    logger.error(f"Error processing file {filepath} in worker process: {e}")
+                file_pbar.update(1) # Update file processing progress bar
 
     # --- Process backlinks ---
-    # Create a mapping for backlinks: for every note target in the index we record which notes link to it.
-    backlink_map: Dict[str, set] = {}
-    for note in existing_index.values():
-        for target in note.get("outgoing_links", []):
-            # Only process targets that exist as a note in the index.
-            if target in existing_index:
-                backlink_map.setdefault(target, set()).add(note["filename"])
+    # Progress bar for backlink calculation
+    with tqdm(total=len(existing_index), desc="Calculating backlinks") as backlink_pbar:
+        backlink_map: Dict[str, set] = {}
+        for note in existing_index.values():
+            for target in note.get("outgoing_links", []):
+                # Only process targets that exist as a note in the index.
+                if target in existing_index:
+                    backlink_map.setdefault(target, set()).add(note["filename"])
+            backlink_pbar.update(1) # Update backlink progress bar
 
-    # Now update each note with a list of backlinks. Note that notes that have no backlinks get an empty list.
-    for key, note in existing_index.items():
-        backlinks = sorted(list(backlink_map.get(key, [])))
-        note["backlinks"] = backlinks
+        # Now update each note with a list of backlinks.
+        for key, note in existing_index.items():
+            backlinks = sorted(list(backlink_map.get(key, [])))
+            note["backlinks"] = backlinks
+
 
     updated_index_data = list(existing_index.values())
     write_updated_index(index_file, updated_index_data)
