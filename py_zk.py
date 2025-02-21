@@ -13,6 +13,8 @@ Features:
   • Output in plain text, CSV, JSON, or table formats.
   • Customize output with format strings (with support for literal curly braces via doubling).
   • Provides index information (--info flag).
+  • List orphan notes (no incoming or outgoing links) (--orphans flag).
+  • Detect and list dangling links (outgoing links to non-existent notes) (--dangling-links flag).
 
 Usage Examples:
   List unique tags:
@@ -35,6 +37,12 @@ Usage Examples:
 
   Filter notes that link to a target note (outgoing links):
       py_zk.py --index-file index.json --filter-outgoing-link TargetNote
+
+  List orphan notes:
+      py_zk.py --index-file index.json --orphans --output-format table
+
+  List dangling links:
+      py_zk.py --index-file index.json --dangling-links --output-format table
 
 For detailed options, run: py_zk.py --help
 """
@@ -295,6 +303,29 @@ def filter_by_outgoing_link(notes: List[Note], target_filename: str) -> List[Not
     """Filter notes that link to a note with the given filename (in outgoing_links)."""
     return [note for note in notes if target_filename in note.outgoing_links]
 
+def filter_orphan_notes(notes: List[Note]) -> List[Note]:
+    """Filter notes that are orphan notes (no outgoing links and no backlinks)."""
+    return [note for note in notes if not note.outgoing_links and not note.backlinks]
+
+def find_dangling_links(notes: List[Note]) -> Dict[str, List[str]]:
+    """
+    Detect dangling links in notes. A dangling link is an outgoing link that does not
+    correspond to any filename in the index.
+
+    Returns a dictionary where keys are filenames of notes with dangling links,
+    and values are lists of dangling link target filenames.
+    """
+    indexed_filenames = {note.filename for note in notes}
+    dangling_links_map: Dict[str, List[str]] = {}
+    for note in notes:
+        dangling = []
+        for target in note.outgoing_links:
+            if target not in indexed_filenames:
+                dangling.append(target)
+        if dangling:
+            dangling_links_map[note.filename] = dangling
+    return dangling_links_map
+
 
 # ---------------- Index Info ----------------
 def get_index_info(index_file: str) -> Dict[str, Any]:
@@ -313,6 +344,10 @@ def get_index_info(index_file: str) -> Dict[str, Any]:
         notes_with_outgoing_links = 0
         min_date = None
         max_date = None
+        dangling_links_count = 0
+        dangling_links_map = find_dangling_links(notes)
+        dangling_links_count = sum(len(links) for links in dangling_links_map.values())
+
 
         for note in notes:
             tags.update(note.tags)
@@ -343,6 +378,7 @@ def get_index_info(index_file: str) -> Dict[str, Any]:
         info['notes_with_backlinks_count'] = notes_with_backlinks
         info['notes_with_outgoing_links_count'] = notes_with_outgoing_links
         info['date_range'] = f"{min_date.isoformat()} to {max_date.isoformat()}" if min_date and max_date else "N/A"
+        info['dangling_links_count'] = dangling_links_count
 
     except Exception as e:
         logging.error(f"Error gathering index info: {e}")
@@ -479,6 +515,41 @@ def format_json(notes: List[Note]) -> str:
         notes_list.append(note_dict)
     return json.dumps(notes_list, indent=2, ensure_ascii=False)
 
+def format_dangling_links_output(dangling_links_map: Dict[str, List[str]], output_format: str = 'plain', use_color: bool = False) -> str:
+    """Format dangling link detection output."""
+    if output_format == 'json':
+        return json.dumps(dangling_links_map, indent=2, ensure_ascii=False)
+    elif output_format == 'csv':
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['filename', 'dangling_links'])
+        for filename, dangling_links in dangling_links_map.items():
+            writer.writerow([filename, ', '.join(dangling_links)])
+        return output.getvalue()
+    elif output_format == 'table':
+        table_data = []
+        for filename, dangling_links in dangling_links_map.items():
+            table_data.append([filename, ', '.join(dangling_links)])
+        headers = ["Filename", "Dangling Links"]
+        if use_color:
+            headers = [colorize(h, 'cyan') for h in headers]
+        return tabulate(table_data, headers=headers, tablefmt="grid")
+    elif output_format == 'plain':
+        lines = []
+        for filename, dangling_links in dangling_links_map.items():
+            if use_color:
+                lines.append(colorize(f"Note: {filename}", 'yellow'))
+            else:
+                lines.append(f"Note: {filename}")
+            for link in dangling_links:
+                if use_color:
+                    lines.append(f"  - {colorize(link, 'red')}")
+                else:
+                    lines.append(f"  - {link}")
+        return "\n".join(lines)
+    else:
+        return ""
+
 
 def format_output(notes: List[Note], output_format: str = 'plain', fields: Optional[List[str]] = None,
                   separator: str = '::', format_string: Optional[str] = None, use_color: bool = False) -> str:
@@ -549,11 +620,11 @@ def main():
 
     # --- Configuration ---
     parser.add_argument('--config-file', type=str, help='Path to a YAML configuration file for settings.')
-    parser.add_argument('--index-file', type=str, required=True, help='Path to the index.json file containing note data.')
+    parser.add_argument('--index-file', '-i', type=str, required=True, help='Path to the index.json file containing note data.')
 
     # --- Output Options ---
     output_group = parser.add_argument_group('Output Options')
-    output_group.add_argument('--output-format', type=str, default='plain', choices=['plain', 'csv', 'json', 'table'],
+    output_group.add_argument('--output-format', '-o', type=str, default='plain', choices=['plain', 'csv', 'json', 'table'],
                               help='Format for output: plain, csv, json, table (default: plain).')
     output_group.add_argument('--output-file', type=str, help='File to write output to (default: stdout).')
     output_group.add_argument('--fields', type=str, nargs='+', help='Fields to include in output (from index.json). Defaults vary by format.')
@@ -566,8 +637,11 @@ def main():
     filter_group = parser.add_argument_group('Filtering Options')
     # Options that are mutually exclusive with --info and --unique-tags:
     filter_exclusive = filter_group.add_mutually_exclusive_group()
-    filter_exclusive.add_argument('--info', '-i', action='store_true', help='Show information about the index and exit.')
+    filter_exclusive.add_argument('--info', action='store_true', help='Show information about the index and exit.')
     filter_exclusive.add_argument('--unique-tags', action='store_true', help='List all unique tags found in the notes.')
+    filter_exclusive.add_argument('--orphans', '--list-orphans', action='store_true', help='List notes with no outgoing and no incoming links (orphan notes).')
+    filter_exclusive.add_argument('--dangling-links', '--list-dangling', action='store_true', help='List notes with dangling outgoing links (links to non-indexed notes).')
+
 
     # The following filtering options can be combined.
     filter_group.add_argument('--filter-tag', type=str, nargs='+', help='Filter notes by tags.')
@@ -583,7 +657,7 @@ def main():
                               help='Filter notes where FIELD exactly matches VALUE.')
 
     # --- Sorting Option ---
-    parser.add_argument('--sort-by', type=str, default='dateModified',
+    parser.add_argument('--sort-by', '-s', type=str, default='dateModified',
                         choices=['dateModified', 'filename', 'title', 'word_count', 'file_size'],
                         help='Field to sort output by (default: dateModified).')
 
@@ -616,12 +690,43 @@ def main():
             print(f"  Notes with backlinks: {info.get('notes_with_backlinks_count', 'N/A')}")
             print(f"  Notes with outgoing links: {info.get('notes_with_outgoing_links_count', 'N/A')}")
             print(f"  Date range of notes: {info.get('date_range', 'N/A')}")
+            print(f"  Dangling links count: {info.get('dangling_links_count', 'N/A')}")
         sys.exit(0)
     elif args.unique_tags:
         unique_tags = sorted({tag for note in notes for tag in note.tags})
         for tag in unique_tags:
             print(tag)
         sys.exit(0)
+    elif args.orphans:
+        # Compute backlinks (needed for orphan detection)
+        notes = add_backlinks_to_notes(notes)
+        notes = filter_orphan_notes(notes)
+        output_str = format_output(notes, args.output_format, args.fields,
+                                   args.separator, args.format_string, use_color)
+        if args.output_file:
+            try:
+                with open(args.output_file, 'w', encoding='utf-8') as f:
+                    f.write(output_str)
+            except OSError as e:
+                logging.error(f"Error writing to output file '{args.output_file}': {e}")
+                sys.exit(1)
+        else:
+            print(output_str)
+        sys.exit(0)
+    elif args.dangling_links:
+        dangling_links_map = find_dangling_links(notes)
+        output_str = format_dangling_links_output(dangling_links_map, args.output_format, use_color)
+        if args.output_file:
+            try:
+                with open(args.output_file, 'w', encoding='utf-8') as f:
+                    f.write(output_str)
+            except OSError as e:
+                logging.error(f"Error writing to output file '{args.output_file}': {e}")
+                sys.exit(1)
+        else:
+            print(output_str)
+        sys.exit(0)
+
 
     # Compute backlinks and update each Note
     notes = add_backlinks_to_notes(notes)
@@ -646,7 +751,7 @@ def main():
         field_name, field_value = args.filter_field
         notes = filter_by_field_value(notes, field_name, field_value)
     if not (args.filter_tag or args.exclude_tag or args.stdin or args.filename_contains or
-            args.filter_backlink or args.filter_outgoing_link or args.date_start or args.date_end or args.filter_field):
+            args.filter_backlink or args.filter_outgoing_link or args.date_start or args.date_end or args.filter_field or args.orphans or args.dangling_links):
         notes = list_default(notes)
 
     # Sort notes.
