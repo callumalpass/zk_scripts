@@ -11,7 +11,7 @@ cd "$NOTES_DIR" || exit
 
 # Run fzf and process the output
 selection=$(
-    "$PY_ZK" --index-file "index.json" --filter-tag person --fields filename aliases givenName familyName --color always \
+    "$PY_ZK" list --mode notes -i "index.json" --filter-tag person --fields filename --fields aliases --fields givenName --fields familyName --color always \
             | fzf \
         --bind "ctrl-e:execute[nvim $NOTES_DIR/{1}.md]" \
         --bind "one:accept" \
@@ -29,9 +29,18 @@ selection=$(
 # If no selection, exit
 [ -z "$selection" ] && exit
 
-transform=$(echo "$selection" | awk -F :: '{print $1}' | "$PY_ZK" --index-file index.json --stdin --output-format plain --format-string '[[{filename}|{givenName}]]' --separator='')
+filename=$(echo "$selection" | awk -F :: '{print $1}')
+aliases=$(echo "$filename" | "$PY_ZK" list --mode notes -i index.json --stdin --fields aliases)
+givenName=$(echo "$filename" | "$PY_ZK" list --mode notes -i index.json --stdin --fields givenName)
+
+if [[ -z "$aliases" ]] 
+then
+        transform="[[$filename|$givenName]]"
+else
+        transform="[[$filename|$aliases]]"
+fi
+
 
 # Send the processed output to the active tmux pane
 tmux send-keys "$transform"
-
 
