@@ -49,7 +49,6 @@ from typing import List, Dict, Any, Optional, Union
 import yaml                     # pip install pyyaml
 from tabulate import tabulate   # pip install tabulate
 import typer
-import click
 
 app = typer.Typer(help="Modern Note Management tool (ZK style) built with Typer.")
 
@@ -75,11 +74,8 @@ def colorize(text: str, color: Optional[str]) -> str:
     return text
 
 # ---------------- Helper for Config Defaults ----------------
+
 def merge_config_option(ctx: typer.Context, cli_value: Optional[Any], key: str, default: Any) -> Any:
-    """
-    If a command-line option is not provided (is None), look up a default in the loaded
-    configuration (if any). Otherwise return the CLI value.
-    """
     config = ctx.obj.get("config", {}) if ctx.obj else {}
     return cli_value if cli_value is not None else config.get(key, default)
 
@@ -150,48 +146,138 @@ def load_index_data(index_file: Path) -> List[Note]:
         logging.error(f"Invalid JSON in '{index_file}': {e}")
         raise typer.Exit(1)
     except Exception as e:
-        logging.error(f"Error reading '{index_file}': {e}")
+        logging.exception(f"Unexpected error reading '{index_file}': {e}")
+        raise typer.Exit(1)
+
+def get_cached_notes(ctx: typer.Context, index_file: Path) -> List[Note]:
+    """
+    Cache and return notes from the index file using the Typer context.
+    """
+    if 'notes_cache' not in ctx.obj:
+        ctx.obj['notes_cache'] = {}
+    cache_key = str(index_file.resolve())
+    if cache_key not in ctx.obj['notes_cache']:
+        ctx.obj['notes_cache'][cache_key] = load_index_data(index_file)
+    return ctx.obj['notes_cache'][cache_key]
+
+# ---------------- Graph Generation ----------------
+
+def generate_graph_data(notes: List[Note]) -> Dict[str, Any]:
+    nodes = [{"id": note.filename, "title": note.title or note.filename} for note in notes]
+    links = []
+    existing_files = {note.filename for note in notes}
+    for note in notes:
+        for target in note.outgoing_links:
+            if target in existing_files:
+                links.append({"source": note.filename, "target": target})
+    return {"nodes": nodes, "links": links}
+
+def generate_graph_html(notes: List[Note], output_file: Path):
+    graph_data = generate_graph_data(notes)
+    template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Note Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { margin: 0; }
+        svg { width: 100vw; height: 100vh; }
+        .links line { stroke: #999; }
+        .nodes circle { fill: steelblue; }
+        .labels text { font-size: 10px; }
+    </style>
+</head>
+<body>
+    <svg></svg>
+    <script>
+        const data = /* GRAPH_DATA_PLACEHOLDER */;
+        const svg = d3.select("svg");
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const g = svg.append("g");
+        const simulation = d3.forceSimulation(data.nodes)
+            .force("link", d3.forceLink(data.links).id(d => d.id))
+            .force("charge", d3.forceManyBody().strength(-50))
+            .force("center", d3.forceCenter(width / 2, height / 2));
+        const link = g.append("g")
+            .attr("class", "links")
+            .selectAll("line")
+            .data(data.links)
+            .enter().append("line");
+        const node = g.append("g")
+            .attr("class", "nodes")
+            .selectAll("circle")
+            .data(data.nodes)
+            .enter().append("circle")
+            .attr("r", 5);
+        const label = g.append("g")
+            .attr("class", "labels")
+            .selectAll("text")
+            .data(data.nodes)
+            .enter().append("text")
+            .text(d => d.title)
+            .attr("dx", 8)
+            .attr("dy", 3);
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+            node
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+            label
+                .attr("x", d => d.x)
+                .attr("y", d => d.y);
+        });
+        svg.call(d3.zoom().on("zoom", (event) => {
+            g.attr("transform", event.transform);
+        }));
+    </script>
+</body>
+</html>
+    """
+    html_content = template.replace('/* GRAPH_DATA_PLACEHOLDER */', json.dumps(graph_data))
+    try:
+        output_file.write_text(html_content, encoding="utf-8")
+    except Exception as e:
+        logging.exception(f"Failed to write graph HTML to '{output_file}': {e}")
         raise typer.Exit(1)
 
 # ---------------- Filtering Functions ----------------
 
 def filter_by_tag(notes: List[Note], tags: List[str], tag_mode: str = 'and', exclude_tags: Optional[List[str]] = None) -> List[Note]:
+    """
+    For each note, check if its tags match the given filter.
+    Hierarchical matching: a note tag matches if it is exactly equal to a filter tag or starts with 'filter_tag/'.
+    """
     filtered_notes = []
     filter_tags = set(tags)
     exclude_set = set(exclude_tags) if exclude_tags else set()
-
+    
     for note in notes:
         note_tags = set(note.tags)
-        include_note = False
-
         if tag_mode == 'or':
-            for filter_tag in filter_tags:
-                for note_tag in note_tags:
-                    if note_tag.startswith(filter_tag) or filter_tag == note_tag:  # Hierarchical tag matching
-                        include_note = True
-                        break
-                if include_note:
-                    break
+            include = any(
+                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
+                for ft in filter_tags
+            )
         elif tag_mode == 'and':
-            include_note = True
-            for filter_tag in filter_tags:
-                tag_match_found = False
-                for note_tag in note_tags:
-                    if note_tag.startswith(filter_tag) or filter_tag == note_tag:
-                        tag_match_found = True
-                        break
-                if not tag_match_found:
-                    include_note = False
-                    break
+            include = all(
+                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
+                for ft in filter_tags
+            )
         else:
-            logging.error(f"Invalid tag_mode: '{tag_mode}'. Using 'and' mode.")
-            include_note = True
-
-        if include_note:
-            if exclude_set and exclude_set.intersection(note_tags):
-                continue
+            logging.error(f"Invalid tag_mode: '{tag_mode}'. Defaulting to 'and'.")
+            include = all(
+                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
+                for ft in filter_tags
+            )
+        if include and not exclude_set.intersection(note_tags):
             filtered_notes.append(note)
-
     return filtered_notes
 
 def filter_by_filenames_stdin(notes: List[Note]) -> List[Note]:
@@ -211,21 +297,20 @@ def parse_iso_datetime(dt_str: str) -> Optional[datetime.datetime]:
         if dt_str.endswith('Z'):
             dt_str = dt_str[:-1]
         dt = datetime.datetime.fromisoformat(dt_str)
-        return dt.replace(tzinfo=None)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
     except ValueError:
         return None
 
 def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None, end_date_str: Optional[str] = None) -> List[Note]:
-    filtered: List[Note] = []
-    start_date = end_date = None
     try:
-        if start_date_str:
-            start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date()
-        if end_date_str:
-            end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date() if start_date_str else None
+        end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date() if end_date_str else None
     except ValueError:
         logging.error("Invalid date format (expected YYYY-MM-DD).")
         return []
+    filtered = []
     for note in notes:
         if note.dateModified:
             note_dt = parse_iso_datetime(note.dateModified)
@@ -241,14 +326,11 @@ def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None
     return filtered
 
 def filter_by_word_count_range(notes: List[Note], min_word_count: Optional[int] = None, max_word_count: Optional[int] = None) -> List[Note]:
-    filtered = []
-    for note in notes:
-        if min_word_count is not None and note.word_count < min_word_count:
-            continue
-        if max_word_count is not None and note.word_count > max_word_count:
-            continue
-        filtered.append(note)
-    return filtered
+    return [
+        note for note in notes
+        if (min_word_count is None or note.word_count >= min_word_count)
+        and (max_word_count is None or note.word_count <= max_word_count)
+    ]
 
 def filter_by_field_value(notes: List[Note], field: str, value: str) -> List[Note]:
     return [note for note in notes if str(note.get_field(field)) == value]
@@ -263,7 +345,12 @@ def find_dangling_links(notes: List[Note]) -> Dict[str, List[str]]:
     indexed = {note.filename for note in notes}
     dangling: Dict[str, List[str]] = {}
     for note in notes:
-        missing = [target for target in note.outgoing_links if target not in indexed]
+        missing = []
+        for target in note.outgoing_links:
+            base_target = target.split('#')[0]
+            if not (base_target.startswith("biblib/") and base_target.lower().endswith(".pdf")):
+                if target not in indexed:
+                    missing.append(target)
         if missing:
             dangling[note.filename] = missing
     return dangling
@@ -405,28 +492,25 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
             return "\n".join(lines)
 
 def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
-    if sort_by == 'filename':
-        return sorted(notes, key=lambda n: n.filename)
-    elif sort_by == 'title':
-        return sorted(notes, key=lambda n: n.title)
-    elif sort_by == 'dateModified':
-        def note_date(n: Note) -> datetime.datetime:
-            dt = parse_iso_datetime(n.dateModified)
-            return dt if dt else datetime.datetime.min
-        return sorted(notes, key=note_date, reverse=True)
-    elif sort_by == 'word_count':
-        return sorted(notes, key=lambda n: n.word_count, reverse=True)
-    elif sort_by == 'file_size':
-        return sorted(notes, key=lambda n: n.file_size, reverse=True)
+    sort_options = {
+        'filename': (lambda n: n.filename, False),
+        'title': (lambda n: n.title, False),
+        'dateModified': (lambda n: parse_iso_datetime(n.dateModified) or datetime.datetime.min, True),
+        'word_count': (lambda n: n.word_count, True),
+        'file_size': (lambda n: n.file_size, True)
+    }
+    if sort_by in sort_options:
+        key_func, reverse = sort_options[sort_by]
+        return sorted(notes, key=key_func, reverse=reverse)
     else:
+        logging.warning(f"Sort field '{sort_by}' not recognized. Returning unsorted notes.")
         return notes
 
 # ---------------- Index Info ----------------
 
-def get_index_info(index_file: Path) -> Dict[str, Any]:
+def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
     try:
-        notes = load_index_data(index_file)
         info['note_count'] = len(notes)
         tags = set()
         total_word_count = 0
@@ -456,9 +540,8 @@ def get_index_info(index_file: Path) -> Dict[str, Any]:
                         min_date = d
                     if max_date is None or d > max_date:
                         max_date = d
-
         info['unique_tag_count'] = len(tags)
-        info['index_file_size_bytes'] = index_file.stat().st_size
+        info['index_file_size_bytes'] = index_file.stat().st_size if index_file.exists() else 0
         info['total_word_count'] = total_word_count
         info['average_word_count'] = total_word_count / len(notes) if notes else 0
         info['total_file_size_bytes'] = total_file_size
@@ -469,23 +552,14 @@ def get_index_info(index_file: Path) -> Dict[str, Any]:
         info['date_range'] = f"{min_date} to {max_date}" if min_date and max_date else "N/A"
         info['dangling_links_count'] = dangling_links_count
     except Exception as e:
-        logging.error(f"Error gathering index info: {e}")
+        logging.exception(f"Error gathering index info: {e}")
     return info
 
-# ---------------- Utility ----------------
-
-def load_and_prepare_notes(index_file: Path) -> List[Note]:
-    notes = load_index_data(index_file)
-    return notes
-
 # ---------------- Global Callback ----------------
+
 @app.callback()
 def main(ctx: typer.Context,
          config_file: Optional[Path] = typer.Option(None, "--config-file", help="Path to a YAML configuration file.")):
-    """
-    Global options for the note management tool.
-    Configuration file settings are loaded if provided; they supply default values for options.
-    """
     ctx.obj = {}
     ctx.obj["config"] = load_config(config_file)
 
@@ -500,36 +574,34 @@ def info(
     """
     Display detailed information about the index file.
     """
-    info_data = get_index_info(index_file)
-    if info_data:
-        lines = [
-            "ZK Index Information:",
-            f"  Number of notes: {info_data.get('note_count', 'N/A')}",
-            f"  Unique tag count: {info_data.get('unique_tag_count', 'N/A')}",
-            f"  Index file size: {(info_data.get('index_file_size_bytes', 0) / 1024):.2f} KB",
-            f"  Total word count: {info_data.get('total_word_count', 'N/A')}",
-            f"  Average word count: {info_data.get('average_word_count', 'N/A'):.0f}",
-            f"  Average file size per note: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
-            f"  Notes with frontmatter: {info_data.get('notes_with_frontmatter_count', 'N/A')}",
-            f"  Notes with backlinks: {info_data.get('notes_with_backlinks_count', 'N/A')}",
-            f"  Notes with outgoing links: {info_data.get('notes_with_outgoing_links_count', 'N/A')}",
-            f"  Date range of notes: {info_data.get('date_range', 'N/A')}",
-            f"  Dangling links count: {info_data.get('dangling_links_count', 'N/A')}"
-        ]
-        output = "\n".join(lines)
-        use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
-        if use_color:
-            # Force color by writing directly to sys.stdout.
-            sys.stdout.write(output + "\n")
-        else:
-            typer.echo(output)
+    notes = get_cached_notes(ctx, index_file)
+    info_data = get_index_info(index_file, notes)
+    lines = [
+        "ZK Index Information:",
+        f"  Number of notes: {info_data.get('note_count', 'N/A')}",
+        f"  Unique tag count: {info_data.get('unique_tag_count', 'N/A')}",
+        f"  Index file size: {(info_data.get('index_file_size_bytes', 0) / 1024):.2f} KB",
+        f"  Total word count: {info_data.get('total_word_count', 'N/A')}",
+        f"  Average word count: {info_data.get('average_word_count', 'N/A'):.0f}",
+        f"  Average file size per note: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
+        f"  Notes with frontmatter: {info_data.get('notes_with_frontmatter_count', 'N/A')}",
+        f"  Notes with backlinks: {info_data.get('notes_with_backlinks_count', 'N/A')}",
+        f"  Notes with outgoing links: {info_data.get('notes_with_outgoing_links_count', 'N/A')}",
+        f"  Date range of notes: {info_data.get('date_range', 'N/A')}",
+        f"  Dangling links count: {info_data.get('dangling_links_count', 'N/A')}"
+    ]
+    output = "\n".join(lines)
+    use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
+    if use_color:
+        sys.stdout.write(colorize(output, 'yellow') + "\n")
+    else:
+        typer.echo(output)
 
 @app.command(name="list")
 def list_(
     ctx: typer.Context,
     index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
     mode: str = typer.Option("notes", "--mode", help="Display mode: notes, unique-tags, orphans, dangling-links."),
-    # Common display options:
     output_format: Optional[str] = typer.Option(None, "-o", help="Output format: plain, csv, json, table."),
     fields: Optional[List[str]] = typer.Option(None, help="Fields to include in output."),
     separator: Optional[str] = typer.Option(None, help="Separator for plain text output (default: '::')."),
@@ -537,7 +609,6 @@ def list_(
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
     sort_by: Optional[str] = typer.Option(None, "-s", help="Field to sort by (dateModified, filename, title, word_count, file_size)."),
     output_file: Optional[Path] = typer.Option(None, "--output-file", help="Write output to file."),
-    # Filtering options (only apply when mode is 'notes')
     filter_tag: Optional[List[str]] = typer.Option(None, help="Tags to filter on (hierarchical tags supported)."),
     tag_mode: Optional[str] = typer.Option(None, help="Tag filter mode: 'and' (default) or 'or'."),
     exclude_tag: Optional[List[str]] = typer.Option(None, help="Exclude notes that contain these tags."),
@@ -553,14 +624,7 @@ def list_(
 ):
     """
     List notes or note metadata based on various criteria.
-
-    The --mode option selects what to list:
-      • notes (default): List all notes (or those filtered via the extra options below)
-      • unique-tags: List all unique tags
-      • orphans: List notes with no incoming or outgoing links
-      • dangling-links: Display notes with outgoing links pointing to non-existent notes
     """
-    # Merge with config defaults
     output_format = merge_config_option(ctx, output_format, "output_format", "plain")
     separator = merge_config_option(ctx, separator, "separator", "::")
     color = merge_config_option(ctx, color, "color", "auto")
@@ -575,19 +639,19 @@ def list_(
         raise typer.Exit(1)
 
     if mode == "unique-tags":
-        notes = load_index_data(index_file)
+        notes = get_cached_notes(ctx, index_file)
         tags = sorted({tag for note in notes for tag in note.tags})
         output = "\n".join(tags)
     elif mode == "orphans":
-        notes = load_and_prepare_notes(index_file)
+        notes = get_cached_notes(ctx, index_file)
         orphan_notes = filter_orphan_notes(notes)
         output = format_output(orphan_notes, output_format, fields, separator, format_string, use_color)
     elif mode == "dangling-links":
-        notes = load_index_data(index_file)
+        notes = get_cached_notes(ctx, index_file)
         d_map = find_dangling_links(notes)
         output = format_dangling_links_output(d_map, output_format, use_color)
     else:  # mode == "notes"
-        notes = load_and_prepare_notes(index_file)
+        notes = get_cached_notes(ctx, index_file)
         if filter_tag:
             notes = filter_by_tag(notes, filter_tag, tag_mode, exclude_tag)
         elif exclude_tag and not filter_tag:
@@ -612,13 +676,29 @@ def list_(
         output = format_output(notes, output_format, fields, separator, format_string, use_color)
 
     if output_file:
-        output_file.write_text(output, encoding="utf-8")
+        try:
+            output_file.write_text(output, encoding="utf-8")
+        except Exception as e:
+            logging.exception(f"Failed to write output to '{output_file}': {e}")
+            raise typer.Exit(1)
     else:
-        # When forcing color, simply write directly to sys.stdout.
         if use_color and output_format not in ('json', 'csv'):
             sys.stdout.write(output + "\n")
         else:
             typer.echo(output)
+
+@app.command(name="graph")
+def graph(
+    ctx: typer.Context,
+    index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
+    output_file: Path = typer.Option("graph.html", "--output", help="Output HTML file.")
+):
+    """
+    Generate an interactive graph visualization of note connections.
+    """
+    notes = get_cached_notes(ctx, index_file)
+    generate_graph_html(notes, output_file)
+    typer.echo(f"Graph generated at {output_file}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
