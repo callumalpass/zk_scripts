@@ -116,9 +116,9 @@ class Note:
             givenName=data.get('givenName', ''),
             familyName=data.get('familyName', '') or "",
             outgoing_links=data.get('outgoing_links', []) if isinstance(data.get('outgoing_links', []), list) else [],
+            backlinks=data.get('backlinks', []) if isinstance(data.get('backlinks', []), list) else [],
             word_count=data.get('word_count', 0) if isinstance(data.get('word_count', 0), int) else 0,
             file_size=data.get('file_size', 0) if isinstance(data.get('file_size', 0), int) else 0,
-            backlinks=[],
             _extra_fields=extra_fields
         )
 
@@ -152,36 +152,6 @@ def load_index_data(index_file: Path) -> List[Note]:
     except Exception as e:
         logging.error(f"Error reading '{index_file}': {e}")
         raise typer.Exit(1)
-
-# ---------------- Backlink Computation ----------------
-
-def compute_backlinks(notes: List[Note]) -> Dict[str, List[str]]:
-    backlinks: Dict[str, List[str]] = {}
-    for note in notes:
-        for target in note.outgoing_links:
-            backlinks.setdefault(target, []).append(note.filename)
-    return backlinks
-
-def add_backlinks_to_notes(notes: List[Note]) -> List[Note]:
-    backlinks_map = compute_backlinks(notes)
-    updated = []
-    for note in notes:
-        b_links = backlinks_map.get(note.filename, [])
-        updated.append(Note(
-            filename=note.filename,
-            title=note.title,
-            tags=note.tags,
-            dateModified=note.dateModified,
-            aliases=note.aliases,
-            givenName=note.givenName,
-            familyName=note.familyName,
-            outgoing_links=note.outgoing_links,
-            backlinks=b_links,
-            word_count=note.word_count,
-            file_size=note.file_size,
-            _extra_fields=note._extra_fields
-        ))
-    return updated
 
 # ---------------- Filtering Functions ----------------
 
@@ -506,7 +476,7 @@ def get_index_info(index_file: Path) -> Dict[str, Any]:
 
 def load_and_prepare_notes(index_file: Path) -> List[Note]:
     notes = load_index_data(index_file)
-    return add_backlinks_to_notes(notes)
+    return notes
 
 # ---------------- Global Callback ----------------
 @app.callback()
