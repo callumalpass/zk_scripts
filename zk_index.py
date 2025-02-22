@@ -349,11 +349,8 @@ def main() -> None:
 
     updated_index_data = list(existing_index.values())
     write_updated_index(index_file, updated_index_data)
+    save_index_state(state_file, current_index_state)
 
-    if not args.full_reindex:
-        save_index_state(state_file, current_index_state)
-    elif args.verbose:
-        logger.info("Skipping saving state file because full reindex was forced.")
 
 
 if __name__ == "__main__":
