@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-Incremental Fast ZK indexer with Backlinks
+Incremental Fast ZK indexer with Backlinks and Citation Link Extraction
 
 • Uses os.scandir recursively to list markdown files quickly.
-• Skips whole directories that match any exclude pattern.
+• Skips whole directories matching any exclude pattern.
 • Reads each file at once and splits on the YAML front matter separator.
-• Uses a compiled regex for wikilink extraction.
-• Parallels file processing using ProcessPoolExecutor.
+• Uses compiled regexes for wikilink, inline citation, and wikilinked citation extraction.
+• Parallelizes file processing with ProcessPoolExecutor.
 • Converts YAML dates to ISO strings for JSON output.
-• Incremental indexing by checking file modification times.
+• Performs incremental indexing via file modification times.
 • Handles deleted notes by removing them from the index.
-• Indexes the body content, file size, and word count.
-• Processes backlinks: after gathering outgoing links from each note,
-  computes for each note which other notes refer to it.
+• Indexes body content, file size, word count, and now citation reference keys.
+• Processes backlinks: after gathering outgoing links from each note, computes which notes refer to others.
 
 Command line arguments:
   --notes-dir <path>     : Override notes directory from config or default.
   --index-file <path>    : Override index file path from config or default.
   --config-file <path>   : Specify a different config file path.
   --full-reindex, -f     : Force full reindex, ignoring mod times and index state.
-  --exclude-patterns <str>: Override exclude patterns (space-separated, e.g., "templates/ .zk/").
+  --exclude-patterns <str>: Override exclude patterns (space‐separated, e.g., "templates/ .zk/").
   --verbose, -v          : Increase verbosity of output.
   --workers <int>        : Number of worker processes for indexing.
 """
@@ -36,15 +35,24 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 
+# Default config file and number of worker processes.
 CONFIG_FILE = os.path.expanduser("~/.config/zk_scripts/config.yaml")
 DEFAULT_WORKERS = 8  # Default number of worker processes
 
-# Precompiled regex for wikilinks – matches [[target]] optionally with an alias.
+# Precompiled regex for wikilinks – original pattern (not used for filtering citations now).
 WIKILINK_RE = re.compile(r'\[\[([^|\]]+)(?:\|[^\]]+)?\]\]')
+
+# New fixed regex patterns for citation extraction.
+INLINE_CITATION_RE = re.compile(r'@([a-zA-Z0-9_]+)(?:\s+p\.\s+\d+)?')
+# Matches wikilinked citations: [[ ... | [@citekey ...]]]
+WIKILINKED_CITATION_RE = re.compile(r'\[\[.*?\|\[@([a-zA-Z0-9_]+).*?\]\]')
+# This regex will be used to extract all wikilinks and capture an optional alias.
+WIKILINK_ALL_RE = re.compile(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]')
+# To check whether the wikilink alias represents a citation.
+CITATION_ALIAS_RE = re.compile(r'^\[@([a-zA-Z0-9_]+)')
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging
-
 
 def resolve_config_value(config: Dict[str, Any], key_path: str, default_value: Any) -> Any:
     """Resolves a configuration value from a dotted key path."""
@@ -56,7 +64,6 @@ def resolve_config_value(config: Dict[str, Any], key_path: str, default_value: A
         else:
             return default_value
     return current
-
 
 def load_config(config_file: str) -> Dict[str, Any]:
     """Loads configuration from a YAML file."""
@@ -71,7 +78,6 @@ def load_config(config_file: str) -> Dict[str, Any]:
         logger.warning(f"YAML error in '{config_file}': {e}. Using defaults.")
         return {}
 
-
 def json_ready(data: Any) -> Any:
     """Recursively converts datetime.date objects to ISO strings for JSON serialization."""
     if isinstance(data, date):
@@ -83,9 +89,8 @@ def json_ready(data: Any) -> Any:
     else:
         return data
 
-
 def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None) -> List[str]:
-    """Recursively finds files under a directory, skipping paths that match any exclude patterns."""
+    """Recursively finds files under a directory, skipping paths matching any exclude patterns."""
     exclude_patterns = exclude_patterns or []
     paths = []
     try:
@@ -102,7 +107,6 @@ def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None) -
     except OSError as e:
         logger.error(f"OS error while scanning directory: {root}. Skipping. Error: {e}")
     return paths
-
 
 def extract_frontmatter_and_body(content: str) -> Tuple[Dict[str, Any], str]:
     """Extracts YAML front matter and body from the markdown content."""
@@ -127,26 +131,44 @@ def extract_frontmatter_and_body(content: str) -> Tuple[Dict[str, Any], str]:
         body = body.strip()
     return meta, body
 
-
-def extract_wikilinks(body: str) -> List[str]:
-    """Extracts unique wikilinks from the markdown body."""
+def extract_wikilinks_filtered(body: str) -> List[str]:
+    """
+    Extracts wikilinks from the markdown body while filtering out wikilinked citations.
+    For each match in the form [[target]] or [[target|alias]]:
+      - If an alias is present and it matches a citation pattern (e.g., starts with [@citekey),
+        then the wikilink is considered a citation and is not added to outgoing links.
+      - Otherwise, the 'target' is added.
+    """
     outgoing_links: List[str] = []
-    seen_links = set()
-    for link in WIKILINK_RE.findall(body):
-        link = link.replace("\\", "")
-        if link not in seen_links:
-            seen_links.add(link)
-            outgoing_links.append(link)
-    return outgoing_links
-
+    for match in re.finditer(WIKILINK_ALL_RE, body):
+        target = match.group(1)
+        alias = match.group(2)
+        if alias:
+            # If alias looks like a citation link, skip adding this wikilink to outgoing links.
+            if CITATION_ALIAS_RE.match(alias.strip()):
+                continue
+        outgoing_links.append(target)
+    # Remove duplicates while preserving order.
+    seen = set()
+    filtered = []
+    for link in outgoing_links:
+        if link not in seen:
+            seen.add(link)
+            filtered.append(link)
+    return filtered
 
 def calculate_word_count(body: str) -> int:
     """Calculates the number of words in a given string."""
     return len(body.split())
 
-
 def process_markdown_file(filepath: str, fd_exclude_patterns: List[str], notes_dir: str) -> Optional[Dict[str, Any]]:
-    """Processes a single markdown file: extracts metadata, body, word count, outgoing links and file info."""
+    """
+    Processes a single markdown file:
+    - Extracts YAML frontmatter and body content.
+    - Extracts citation references from inline and wikilinked citation patterns.
+    - Extracts wikilinks (excluding wikilinked citations) from the body.
+    - Calculates word count, file size, and relative note filename.
+    """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -158,7 +180,19 @@ def process_markdown_file(filepath: str, fd_exclude_patterns: List[str], notes_d
     name_noext = os.path.splitext(rel_path)[0]
 
     meta, body = extract_frontmatter_and_body(content)
-    outgoing_links = extract_wikilinks(body)
+
+    # --- Citation Extraction: ---
+    # Extract inline citations (e.g., "@Smith2020 p. 56")
+    inline_citations = INLINE_CITATION_RE.findall(body)
+    # Extract wikilinked citations (e.g., [[...|[@Smith2020 p. 56]]])
+    wikilink_citations = WIKILINKED_CITATION_RE.findall(body)
+    # Combine and ensure uniqueness.
+    references_set = set(inline_citations) | set(wikilink_citations)
+    references = sorted(references_set)
+
+    # --- Outgoing Wikilinks Extraction (excluding wikilinked citations) ---
+    outgoing_links = extract_wikilinks_filtered(body)
+
     word_count = calculate_word_count(body)
     file_size = os.path.getsize(filepath)
 
@@ -168,10 +202,10 @@ def process_markdown_file(filepath: str, fd_exclude_patterns: List[str], notes_d
         "body": body,
         "word_count": word_count,
         "file_size": file_size,
+        "references": references,  # New field for citation references
     }
     result.update(meta)
     return result
-
 
 def load_index_state(state_file: str) -> Dict[str, float]:
     """Loads the previous index state from a JSON file (mapping filepath to modification timestamp)."""
@@ -188,7 +222,6 @@ def load_index_state(state_file: str) -> Dict[str, float]:
         return {}
     return {}
 
-
 def save_index_state(state_file: str, index_state: Dict[str, float]) -> None:
     """Saves the current index state (filepath to modification timestamp) to a JSON file."""
     try:
@@ -196,7 +229,6 @@ def save_index_state(state_file: str, index_state: Dict[str, float]) -> None:
             json.dump(index_state, f, indent=2)
     except OSError as e:
         logger.error(f"Error writing index state file '{state_file}': {e}")
-
 
 def load_existing_index(index_file: str) -> Dict[str, Dict[str, Any]]:
     """Loads the existing index from the index file (mapping note names to their info)."""
@@ -210,7 +242,6 @@ def load_existing_index(index_file: str) -> Dict[str, Dict[str, Any]]:
             existing_index = {}
     return existing_index
 
-
 def write_updated_index(index_file: str, updated_index_data: List[Dict[str, Any]]) -> None:
     """Writes the updated index data to the index file and exits on failure."""
     try:
@@ -220,7 +251,6 @@ def write_updated_index(index_file: str, updated_index_data: List[Dict[str, Any]
     except OSError as e:
         logger.error(f"Error writing index file '{index_file}': {e}")
         sys.exit(1)
-
 
 def remove_index_state_file(state_file: str, verbose: bool) -> None:
     """Removes the state file that tracks file modification times."""
@@ -234,9 +264,8 @@ def remove_index_state_file(state_file: str, verbose: bool) -> None:
     elif verbose:
         logger.info(f"Index state file not found, skipping removal: {state_file}")
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Incremental Fast ZK indexer with Backlinks")
+    parser = argparse.ArgumentParser(description="Incremental Fast ZK indexer with Backlinks and Citation Extraction")
     parser.add_argument("--notes-dir", help="Override notes directory")
     parser.add_argument("--index-file", help="Override index file path")
     parser.add_argument("--config-file", default=CONFIG_FILE, help="Specify config file path")
@@ -249,7 +278,7 @@ def main() -> None:
 
     config = load_config(args.config_file)
 
-    # Defaults – you may want to further parameterize these in your config
+    # Defaults – you may parameterize these in your config.
     notes_dir_default = "/home/calluma/Dropbox/notes"
     index_file_default = os.path.join(notes_dir_default, "index.json")
     fd_exclude_patterns_default = ["templates/", ".zk/"]
@@ -257,7 +286,7 @@ def main() -> None:
     notes_dir = args.notes_dir or resolve_config_value(config, "notes_dir", notes_dir_default)
     index_file = args.index_file or resolve_config_value(config, "zk_index.index_file", index_file_default)
 
-    # Get exclusion patterns from the args/config. Expecting something like "-E templates/ -E .zk/"
+    # Get exclusion patterns either from args or config.
     fd_exclude_patterns_str = args.exclude_patterns or resolve_config_value(config, "zk_index.fd_exclude_patterns", "-E templates/ -E .zk/")
     fd_exclude_patterns = re.findall(r'-E\s+([^\s]+)', fd_exclude_patterns_str)
     if not fd_exclude_patterns:
@@ -282,15 +311,14 @@ def main() -> None:
 
     existing_index = load_existing_index(index_file)
 
-    # Get all markdown files under notes_dir (excluding dirs based on fd_exclude_patterns)
     if args.verbose:
-        logger.info(f"Scanning files")
+        logger.info("Scanning files")
     markdown_files = [fp for fp in scandir_recursive(notes_dir, exclude_patterns=fd_exclude_patterns)
                       if fp.lower().endswith(".md")]
     current_filepaths = set(markdown_files)
     previous_filepaths = set(previous_index_state.keys())
 
-    # Handle deleted notes: if a note file existed before but does not anymore, remove it from the index.
+    # Handle deleted notes: remove notes that no longer exist.
     deleted_files = [prev_fp for prev_fp in previous_filepaths if prev_fp not in current_filepaths]
     for deleted in deleted_files:
         key = os.path.splitext(os.path.relpath(deleted, notes_dir))[0]
@@ -310,13 +338,11 @@ def main() -> None:
         except OSError as e:
             logger.warning(f"File disappeared or error accessing: {filepath}. Error: {e}")
 
-
     if args.verbose:
         logger.info(f"Files to process: {len(files_to_process)}")
 
-    # --- Progress bar for file processing ---
+    # --- Process updated markdown files in parallel ---
     with tqdm(total=len(files_to_process), desc="Processing files") as file_pbar:
-        # Process updated markdown files in parallel.
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             futures = {executor.submit(process_markdown_file, fp, fd_exclude_patterns, notes_dir): fp for fp in files_to_process}
             for future in as_completed(futures):
@@ -324,34 +350,28 @@ def main() -> None:
                 try:
                     result = future.result()
                     if result:
-                        # Update (or add) the note, keyed by its relative filename (without extension).
+                        # Update or add the note using its relative filename.
                         existing_index[result['filename']] = result
                 except Exception as e:
                     logger.error(f"Error processing file {filepath} in worker process: {e}")
-                file_pbar.update(1) # Update file processing progress bar
+                file_pbar.update(1)
 
     # --- Process backlinks ---
-    # Progress bar for backlink calculation
     with tqdm(total=len(existing_index), desc="Calculating backlinks") as backlink_pbar:
         backlink_map: Dict[str, set] = {}
         for note in existing_index.values():
             for target in note.get("outgoing_links", []):
-                # Only process targets that exist as a note in the index.
                 if target in existing_index:
                     backlink_map.setdefault(target, set()).add(note["filename"])
-            backlink_pbar.update(1) # Update backlink progress bar
+            backlink_pbar.update(1)
 
-        # Now update each note with a list of backlinks.
         for key, note in existing_index.items():
             backlinks = sorted(list(backlink_map.get(key, [])))
             note["backlinks"] = backlinks
 
-
     updated_index_data = list(existing_index.values())
     write_updated_index(index_file, updated_index_data)
     save_index_state(state_file, current_index_state)
-
-
 
 if __name__ == "__main__":
     main()
