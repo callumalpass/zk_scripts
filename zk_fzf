@@ -16,6 +16,8 @@ cd "$NOTES_DIR" || exit
 
 TEMPLINK=$(mktemp)
 
+"$PY_ZK" list --mode notes -i "$INDEX_FILE" --format-string '[[{filename}|{title}]]' > ~/Documents/notelist.md &
+
 "$ZK_INDEX_SCRIPT" -v
 "$PY_ZK" list --mode notes -i "$INDEX_FILE" --color always \
 | fzf \
@@ -27,9 +29,11 @@ TEMPLINK=$(mktemp)
     --multi \
     --bind "Enter:execute[nvim --server /tmp/obsidian.sock --remote $NOTES_DIR/{+1}.md]+abort" \
     --bind "alt-a:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always )" \
+    --bind "alt-w:execute[echo {+1} | sed 's/ /\n/g' | $PY_ZK list --mode notes -i $NOTES_DIR/index.json --stdin --format-string '- [[{filename}|{title}]]' --separator='' >> workingMem.md ]+reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always )" \
     --bind "alt-o:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" list --mode orphans -i \"$INDEX_FILE\" --color always )" \
-    --bind "alt-e:reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always --exclude-tag literature_note)" \
-    --bind "alt-y:execute[echo {1} | $PY_ZK list --mode notes -i $NOTES_DIR/index.json --stdin --format-string '[[{filename}|{title}]]' --separator='' > $TEMPLINK ]+abort" \
+    --bind "alt-O:execute[\"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" list --mode untagged-orphans -i \"$INDEX_FILE\" --color always )" \
+    --bind "alt-e:reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always --exclude-tag literature_note --exclude-tag person --exclude-tag task --exclude-tag diary --exclude-tag journal  )" \
+    --bind "alt-y:execute[echo {+1} | sed 's/ /\n/g' | $PY_ZK list --mode notes -i $NOTES_DIR/index.json --stdin --format-string '[[{filename}|{title}]]' --separator='' > $TEMPLINK ]+abort" \
     --bind "ctrl-e:execute[nvim {+1}.md ; \"$ZK_INDEX_SCRIPT\"]+reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always )" \
     --bind "ctrl-alt-r:execute[rm {+1}.md]+reload:(\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --color always )" \
     --bind "ctrl-alt-d:execute[nvim \"$NOTES_DIR/$NOTES_DIARY_SUBDIR/$(date '+%Y-%m-%d' -d tomorrow).md\";]" \
@@ -39,11 +43,14 @@ TEMPLINK=$(mktemp)
     --bind "?:reload(\"$PY_ZK\" info -i \"$INDEX_FILE\" )" \
     --bind "alt-?:toggle-preview" \
     --bind "alt-j:reload[\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --filter-tag diary  --color always]" \
+    --bind "alt-g:execute[echo {+1} | sed 's/ /\n/g' | \"$PY_ZK\" list --stdin -i \"$INDEX_FILE\" --format-string '- [[{filename}|{title}]]' >> {1}.md ]+clear-selection" \
     --bind "alt-b:reload[\"$PY_ZK\" list --mode notes -i \"$INDEX_FILE\" --filter-tag literature_note  --color always]" \
     --bind "ctrl-s:reload[rg '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\.md//' ]" \
     --preview="echo \"Backlinks:\";  rg '\\['{1} -l ; bat --theme=\"$BAT_THEME\" --color=always --decorations=never {1}.md -H {2} 2> /dev/null || bat {1}.md " \
     --preview-window 'wrap:50%:<50(up)' \
+    --color 16 \
     --ansi
+
 
 
 if [[ -e $TEMPLINK ]]

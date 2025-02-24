@@ -24,11 +24,17 @@ Usage examples:
   List orphan notes:
       python modern_py_zk.py list -i index.json --mode orphans
 
+  List untagged orphan notes:
+      python modern_py_zk.py list -i index.json --mode orphans --untagged-orphans
+
   List dangling links (CSV output, written to file):
       python modern_py_zk.py list -i index.json --mode dangling-links --output-format csv --output-file out.csv
 
   List unique tags:
       python modern_py_zk.py list -i index.json --mode unique-tags
+
+  Get detailed index information:
+      python modern_py_zk.py info -i index.json
 
 For more details run:
     python modern_py_zk.py --help
@@ -45,6 +51,7 @@ from pathlib import Path
 from io import StringIO
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Union
+from collections import Counter
 
 import yaml                     # pip install pyyaml
 from tabulate import tabulate   # pip install tabulate
@@ -257,7 +264,7 @@ def filter_by_tag(notes: List[Note], tags: List[str], tag_mode: str = 'and', exc
     filtered_notes = []
     filter_tags = set(tags)
     exclude_set = set(exclude_tags) if exclude_tags else set()
-    
+
     for note in notes:
         note_tags = set(note.tags)
         if tag_mode == 'or':
@@ -340,6 +347,11 @@ def filter_by_outgoing_link(notes: List[Note], target_filename: str) -> List[Not
 
 def filter_orphan_notes(notes: List[Note]) -> List[Note]:
     return [note for note in notes if not note.outgoing_links and not note.backlinks]
+
+def filter_untagged_orphan_notes(notes: List[Note]) -> List[Note]:
+    """Filters notes to return only orphan notes that also have no tags."""
+    return [note for note in filter_orphan_notes(notes) if not note.tags]
+
 
 def find_dangling_links(notes: List[Note]) -> Dict[str, List[str]]:
     indexed = {note.filename for note in notes}
@@ -522,7 +534,13 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
         max_date = None
         dangling_links_map = find_dangling_links(notes)
         dangling_links_count = sum(len(links) for links in dangling_links_map.values())
+        notes_with_tags = 0
+        tag_counter = Counter()
+
         for note in notes:
+            if note.tags:
+                notes_with_tags += 1
+                tag_counter.update(note.tags)
             tags.update(note.tags)
             total_word_count += note.word_count
             total_file_size += note.file_size
@@ -540,6 +558,8 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
                         min_date = d
                     if max_date is None or d > max_date:
                         max_date = d
+
+        most_common_tags = tag_counter.most_common(5) # Top 5 tags
         info['unique_tag_count'] = len(tags)
         info['index_file_size_bytes'] = index_file.stat().st_size if index_file.exists() else 0
         info['total_word_count'] = total_word_count
@@ -551,6 +571,10 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
         info['notes_with_outgoing_links_count'] = notes_with_outgoing_links
         info['date_range'] = f"{min_date} to {max_date}" if min_date and max_date else "N/A"
         info['dangling_links_count'] = dangling_links_count
+        info['notes_with_tags_count'] = notes_with_tags
+        info['notes_without_tags_count'] = info['note_count'] - notes_with_tags
+        info['most_common_tags'] = most_common_tags
+
     except Exception as e:
         logging.exception(f"Error gathering index info: {e}")
     return info
@@ -572,7 +596,7 @@ def info(
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
 ):
     """
-    Display detailed information about the index file.
+    Display detailed information about the index file, including tag statistics and counts of notes with various features.
     """
     notes = get_cached_notes(ctx, index_file)
     info_data = get_index_info(index_file, notes)
@@ -580,6 +604,9 @@ def info(
         "ZK Index Information:",
         f"  Number of notes: {info_data.get('note_count', 'N/A')}",
         f"  Unique tag count: {info_data.get('unique_tag_count', 'N/A')}",
+        f"  Notes with tags: {info_data.get('notes_with_tags_count', 'N/A')} ({(info_data.get('notes_with_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
+        f"  Notes without tags: {info_data.get('notes_without_tags_count', 'N/A')} ({(info_data.get('notes_without_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
+        f"  Top 5 most common tags: {', '.join([f'{tag} ({count})' for tag, count in info_data.get('most_common_tags', [])]) or 'N/A'}",
         f"  Index file size: {(info_data.get('index_file_size_bytes', 0) / 1024):.2f} KB",
         f"  Total word count: {info_data.get('total_word_count', 'N/A')}",
         f"  Average word count: {info_data.get('average_word_count', 'N/A'):.0f}",
@@ -620,7 +647,9 @@ def list_(
     date_end: Optional[str] = typer.Option(None, help="End date (YYYY-MM-DD)."),
     filter_field: Optional[List[str]] = typer.Option(None, help="FIELD VALUE pair for literal filtering (e.g., familyName Doe)."),
     min_word_count: Optional[int] = typer.Option(None, help="Minimum word count."),
-    max_word_count: Optional[int] = typer.Option(None, help="Maximum word count.")
+    max_word_count: Optional[int] = typer.Option(None, help="Maximum word count."),
+    untagged_orphans: bool = typer.Option(False, "--untagged-orphans", help="List only orphan notes that have no tags.")
+
 ):
     """
     List notes or note metadata based on various criteria.
@@ -633,7 +662,7 @@ def list_(
     use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
 
     mode = mode.lower()
-    allowed_modes = ("notes", "unique-tags", "orphans", "dangling-links")
+    allowed_modes = ("notes", "unique-tags", "orphans", "dangling-links", "untagged-orphans")
     if mode not in allowed_modes:
         typer.echo(f"Invalid mode '{mode}'. Allowed values: {', '.join(allowed_modes)}", err=True)
         raise typer.Exit(1)
@@ -646,6 +675,10 @@ def list_(
         notes = get_cached_notes(ctx, index_file)
         orphan_notes = filter_orphan_notes(notes)
         output = format_output(orphan_notes, output_format, fields, separator, format_string, use_color)
+    elif mode == "untagged-orphans":
+        notes = get_cached_notes(ctx, index_file)
+        untagged_orphan_notes = filter_untagged_orphan_notes(notes)
+        output = format_output(untagged_orphan_notes, output_format, fields, separator, format_string, use_color)
     elif mode == "dangling-links":
         notes = get_cached_notes(ctx, index_file)
         d_map = find_dangling_links(notes)
