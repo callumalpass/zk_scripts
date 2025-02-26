@@ -12,6 +12,7 @@ This tool processes a JSON index file of notes and supports:
   • Displaying index information (summary statistics).
   • Listing unique tags, orphan notes (no incoming/outgoing links) and dangling links.
   • Loading default settings from a YAML config file.
+  • Searching for similar notes using OpenAI embeddings (loaded from a separate embeddings file).
 
 Hierarchical Tags: Tags can be hierarchical, using '/' as a separator (e.g., 'project/active', 'topic/programming').
 When filtering by a parent tag (e.g., 'project'), notes with any child tags (like 'project/active') will also be included.
@@ -36,6 +37,9 @@ Usage examples:
   Get detailed index information:
       python modern_py_zk.py info -i index.json
 
+  Search for similar notes via embeddings (requires an embeddings file alongside index.json):
+      python modern_py_zk.py search-embeddings -i index.json --query-file note.md --k 5
+
 For more details run:
     python modern_py_zk.py --help
 """
@@ -56,6 +60,9 @@ from collections import Counter
 import yaml                     # pip install pyyaml
 from tabulate import tabulate   # pip install tabulate
 import typer
+import numpy as np
+import openai
+import time
 
 app = typer.Typer(help="Modern Note Management tool (ZK style) built with Typer.")
 
@@ -352,7 +359,6 @@ def filter_untagged_orphan_notes(notes: List[Note]) -> List[Note]:
     """Filters notes to return only orphan notes that also have no tags."""
     return [note for note in filter_orphan_notes(notes) if not note.tags]
 
-
 def find_dangling_links(notes: List[Note]) -> Dict[str, List[str]]:
     indexed = {note.filename for note in notes}
     dangling: Dict[str, List[str]] = {}
@@ -559,7 +565,7 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
                     if max_date is None or d > max_date:
                         max_date = d
 
-        most_common_tags = tag_counter.most_common(5) # Top 5 tags
+        most_common_tags = tag_counter.most_common(5)  # Top 5 tags
         info['unique_tag_count'] = len(tags)
         info['index_file_size_bytes'] = index_file.stat().st_size if index_file.exists() else 0
         info['total_word_count'] = total_word_count
@@ -578,6 +584,133 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
     except Exception as e:
         logging.exception(f"Error gathering index info: {e}")
     return info
+
+# ---------------- Embeddings Search Helpers ----------------
+
+def get_embedding(text: str, model: str = "text-embedding-ada-002", max_retries: int = 5) -> List[float]:
+    # Ensure the API key is set
+    if not openai.api_key:
+        openai.api_key = os.getenv("OPEN_AI_KEY")
+    for attempt in range(max_retries):
+        try:
+            result = openai.embeddings.create(input=text, model=model)
+            return result.data[0].embedding
+        except Exception as e:
+            typer.echo(f"Error fetching embedding (attempt {attempt+1}/{max_retries}): {e}")
+            time.sleep(1)
+    raise Exception("Failed to fetch embedding after multiple attempts.")
+
+def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+    return float(np.dot(vec_a, vec_b) / (np.linalg.norm(vec_a) * np.linalg.norm(vec_b) + 1e-10))
+
+# ---------------- Embeddings Search Command ----------------
+
+@app.command("search-embeddings")
+def search_embeddings(
+    ctx: typer.Context,
+    index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
+    query_file: Path = typer.Argument(..., help="Path to the note to search similar ones for."),
+    embeddings_file: Optional[Path] = typer.Option(None, "--embeddings", help="Path to embeddings JSON file. Default: {index_file.parent}/embeddings.json"),
+    embedding_model: str = typer.Option("text-embedding-ada-002", "--embedding-model", help="OpenAI embedding model to use."),
+    k: int = typer.Option(5, "--k", help="Number of similar notes to return.")
+):
+    """
+    Search for similar notes using OpenAI embeddings.
+
+    This command loads the index and then loads the separate embeddings file (if available).
+    If the query note in the index does not have a stored embedding, it is computed on the fly.
+    The top k most similar notes (by cosine similarity) are then displayed using the default format:
+
+        {filename}::{title}::{similarity}
+
+    """
+    # Determine default for embeddings file if not set.
+    if not embeddings_file:
+        embeddings_file = index_file.parent / "embeddings.json"
+    # Load index data (using cache)
+    notes = get_cached_notes(ctx, index_file)
+    if not notes:
+        raise typer.Exit("No notes loaded from index.")
+    # Build a mapping: note filename ➔ Note object
+    notes_dict: Dict[str, Note] = {n.filename: n for n in notes}
+    # Determine query note by matching its basename (without extension)
+    query_basename = query_file.stem
+    query_note: Optional[Note] = None
+    for note in notes:
+        if Path(note.filename).stem == query_basename:
+            query_note = note
+            break
+    if not query_note:
+        raise typer.Exit(f"Query note matching '{query_file}' not found in index.")
+    # Load embeddings mapping from file
+    if not embeddings_file.exists():
+        raise typer.Exit(f"Embeddings file '{embeddings_file}' not found. Cannot perform search.")
+    try:
+        with embeddings_file.open("r", encoding="utf-8") as ef:
+            embeddings_map: Dict[str, List[float]] = json.load(ef)
+    except Exception as e:
+        raise typer.Exit(f"Error reading embeddings file '{embeddings_file}': {e}")
+
+    # Get or compute the query embedding.
+    query_id = query_note.filename
+    if query_id in embeddings_map:
+        query_embedding = embeddings_map[query_id]
+    else:
+        body_text = str(query_note.get_field("body"))
+        if not body_text:
+            raise typer.Exit(f"Query note '{query_id}' has no 'body' field to compute an embedding.")
+        typer.echo("Query note has no stored embedding. Computing one on the fly...")
+        query_embedding = get_embedding(body_text, model=embedding_model)
+    # Build lists of embeddings and corresponding note IDs.
+    available_ids = []
+    embeddings_list = []
+    for note in notes:
+        nid = note.filename
+        if nid in embeddings_map:
+            embeddings_list.append(embeddings_map[nid])
+            available_ids.append(nid)
+    if not embeddings_list:
+        raise typer.Exit("No embeddings found in the embeddings file to compare against.")
+    embeddings_array = np.array(embeddings_list, dtype="float32")
+    # Normalize embeddings.
+    def normalize(vec: np.ndarray) -> np.ndarray:
+        return vec / (np.linalg.norm(vec) + 1e-10)
+    embeddings_normalized = np.array([normalize(np.array(vec, dtype="float32")) for vec in embeddings_list])
+    query_vector = normalize(np.array(query_embedding, dtype="float32"))
+    # Compute cosine similarities.
+    similarities = np.dot(embeddings_normalized, query_vector)
+    # Find top k indices, excluding the query note if present.
+    try:
+        query_idx = available_ids.index(query_id)
+    except ValueError:
+        query_idx = None
+    sorted_indices = np.argsort(similarities)[::-1]
+    top_k = []
+    for idx in sorted_indices:
+        if query_idx is not None and idx == query_idx:
+            continue
+        top_k.append(idx)
+        if len(top_k) >= k:
+            break
+    # Prepare results for display.
+    results = []
+    for idx in top_k:
+        nid = available_ids[idx]
+        sim_score = similarities[idx]
+        note = notes_dict.get(nid)
+        if note:
+            results.append({"filename": nid, "title": note.title or nid, "similarity": sim_score})
+    if not results:
+        typer.echo("No similar notes found.")
+        raise typer.Exit()
+    # Output using a default plain format: "{filename}::{title}::{similarity}"
+    default_format = "{filename}::{title}::{similarity:.4f}"
+    lines = []
+    for res in results:
+        line = default_format.format(**res)
+        lines.append(line)
+    output = "\n".join(lines)
+    typer.echo(output)
 
 # ---------------- Global Callback ----------------
 
@@ -649,7 +782,6 @@ def list_(
     min_word_count: Optional[int] = typer.Option(None, help="Minimum word count."),
     max_word_count: Optional[int] = typer.Option(None, help="Maximum word count."),
     untagged_orphans: bool = typer.Option(False, "--untagged-orphans", help="List only orphan notes that have no tags.")
-
 ):
     """
     List notes or note metadata based on various criteria.
