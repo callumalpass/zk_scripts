@@ -20,28 +20,28 @@ When filtering by a parent tag (e.g., 'project'), notes with any child tags (lik
 Usage examples:
 
   List notes (filter by tag “project” using OR logic and table output):
-      python modern_py_zk.py list -i index.json --mode notes --filter-tag project --tag-mode or --output-format table
+      python py_zk.py list -i index.json --mode notes --filter-tag project --tag-mode or --output-format table
 
   List orphan notes:
-      python modern_py_zk.py list -i index.json --mode orphans
+      python py_zk.py list -i index.json --mode orphans
 
   List untagged orphan notes:
-      python modern_py_zk.py list -i index.json --mode orphans --untagged-orphans
+      python py_zk.py list -i index.json --mode orphans --untagged-orphans
 
   List dangling links (CSV output, written to file):
-      python modern_py_zk.py list -i index.json --mode dangling-links --output-format csv --output-file out.csv
+      python py_zk.py list -i index.json --mode dangling-links --output-format csv --output-file out.csv
 
   List unique tags:
-      python modern_py_zk.py list -i index.json --mode unique-tags
+      python py_zk.py list -i index.json --mode unique-tags
 
   Get detailed index information:
-      python modern_py_zk.py info -i index.json
+      python py_zk.py info -i index.json
 
   Search for similar notes via embeddings (requires an embeddings file alongside index.json):
-      python modern_py_zk.py search-embeddings -i index.json --query-file note.md --k 5
+      python py_zk.py search-embeddings -i index.json --query-file note.md --k 5
 
 For more details run:
-    python modern_py_zk.py --help
+    python py_zk.py --help
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ from io import StringIO
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Union
 from collections import Counter
+import os
 
 import yaml                     # pip install pyyaml
 from tabulate import tabulate   # pip install tabulate
@@ -524,7 +525,7 @@ def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
         logging.warning(f"Sort field '{sort_by}' not recognized. Returning unsorted notes.")
         return notes
 
-# ---------------- Index Info ----------------
+# ---------------- Enhanced Index Info ----------------
 
 def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
@@ -536,58 +537,96 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
         notes_with_frontmatter = 0
         notes_with_backlinks = 0
         notes_with_outgoing_links = 0
-        min_date = None
-        max_date = None
-        dangling_links_map = find_dangling_links(notes)
-        dangling_links_count = sum(len(links) for links in dangling_links_map.values())
         notes_with_tags = 0
+        notes_with_body = 0
+        word_counts = []
+        file_sizes = []
         tag_counter = Counter()
+        orphan_count = 0      # notes with neither outgoing links nor backlinks
+        untagged_orphan_count = 0
+        dates = []
 
         for note in notes:
+            # Tags and tag frequency
             if note.tags:
                 notes_with_tags += 1
                 tag_counter.update(note.tags)
-            tags.update(note.tags)
-            total_word_count += note.word_count
-            total_file_size += note.file_size
+                tags.update(note.tags)
+            # Body field: check whether the note has a non-empty 'body' field.
+            if str(note.get_field("body")).strip():
+                notes_with_body += 1
+            # Frontmatter (any extra fields)
             if note._extra_fields:
                 notes_with_frontmatter += 1
+            # Backlinks and outgoing links
             if note.backlinks:
                 notes_with_backlinks += 1
             if note.outgoing_links:
                 notes_with_outgoing_links += 1
+            # Word count & file size
+            total_word_count += note.word_count
+            total_file_size += note.file_size
+            word_counts.append(note.word_count)
+            file_sizes.append(note.file_size)
+            # Date range
             if note.dateModified:
                 dt = parse_iso_datetime(note.dateModified)
                 if dt:
-                    d = dt.date()
-                    if min_date is None or d < min_date:
-                        min_date = d
-                    if max_date is None or d > max_date:
-                        max_date = d
+                    dates.append(dt.date())
+            # Orphan check
+            if not note.outgoing_links and not note.backlinks:
+                orphan_count += 1
+                if not note.tags:
+                    untagged_orphan_count += 1
 
-        most_common_tags = tag_counter.most_common(5)  # Top 5 tags
-        info['unique_tag_count'] = len(tags)
-        info['index_file_size_bytes'] = index_file.stat().st_size if index_file.exists() else 0
-        info['total_word_count'] = total_word_count
-        info['average_word_count'] = total_word_count / len(notes) if notes else 0
-        info['total_file_size_bytes'] = total_file_size
-        info['average_file_size_bytes'] = total_file_size / len(notes) if notes else 0
-        info['notes_with_frontmatter_count'] = notes_with_frontmatter
-        info['notes_with_backlinks_count'] = notes_with_backlinks
-        info['notes_with_outgoing_links_count'] = notes_with_outgoing_links
-        info['date_range'] = f"{min_date} to {max_date}" if min_date and max_date else "N/A"
-        info['dangling_links_count'] = dangling_links_count
-        info['notes_with_tags_count'] = notes_with_tags
-        info['notes_without_tags_count'] = info['note_count'] - notes_with_tags
-        info['most_common_tags'] = most_common_tags
+        # Calculate averages and medians
+        avg_word_count = total_word_count / len(notes) if notes else 0
+        avg_file_size = total_file_size / len(notes) if notes else 0
+        median_word_count = float(np.median(word_counts)) if word_counts else 0
+        median_file_size = float(np.median(file_sizes)) if file_sizes else 0
 
+        # Determine date range
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            date_range = f"{min_date} to {max_date}"
+        else:
+            date_range = "N/A"
+
+        # Most common tags (top 5)
+        most_common_tags = tag_counter.most_common(5)
+
+        # Compile all info
+        info.update({
+            'unique_tag_count': len(tags),
+            'index_file_size_bytes': index_file.stat().st_size if index_file.exists() else 0,
+            'total_word_count': total_word_count,
+            'average_word_count': avg_word_count,
+            'median_word_count': median_word_count,
+            'total_file_size_bytes': total_file_size,
+            'average_file_size_bytes': avg_file_size,
+            'median_file_size_bytes': median_file_size,
+            'notes_with_frontmatter_count': notes_with_frontmatter,
+            'notes_with_backlinks_count': notes_with_backlinks,
+            'notes_with_outgoing_links_count': notes_with_outgoing_links,
+            'notes_with_tags_count': notes_with_tags,
+            'notes_without_tags_count': len(notes) - notes_with_tags,
+            'notes_with_body_count': notes_with_body,
+            'notes_without_body_count': len(notes) - notes_with_body,
+            'date_range': date_range,
+            'dangling_links_count': sum(len(links) for links in find_dangling_links(notes).values()),
+            'orphan_notes_count': orphan_count,
+            'untagged_orphan_notes_count': untagged_orphan_count,
+            'most_common_tags': most_common_tags,
+        })
     except Exception as e:
         logging.exception(f"Error gathering index info: {e}")
     return info
 
+
 # ---------------- Embeddings Search Helpers ----------------
 
-def get_embedding(text: str, model: str = "text-embedding-ada-002", max_retries: int = 5) -> List[float]:
+def get_embedding(text: str, model: str = "text-embedding-3-small", max_retries: int = 5) -> List[float]:
     # Ensure the API key is set
     if not openai.api_key:
         openai.api_key = os.getenv("OPEN_AI_KEY")
@@ -609,16 +648,20 @@ def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
 def search_embeddings(
     ctx: typer.Context,
     index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
-    query_file: Path = typer.Argument(..., help="Path to the note to search similar ones for."),
+    query_file: Optional[Path] = typer.Argument(None, help="Path to the note file to search similar ones for."),
     embeddings_file: Optional[Path] = typer.Option(None, "--embeddings", help="Path to embeddings JSON file. Default: {index_file.parent}/embeddings.json"),
-    embedding_model: str = typer.Option("text-embedding-ada-002", "--embedding-model", help="OpenAI embedding model to use."),
-    k: int = typer.Option(5, "--k", help="Number of similar notes to return.")
+    embedding_model: str = typer.Option("text-embedding-3-small", "--embedding-model", help="OpenAI embedding model to use."),
+    k: int = typer.Option(5, "--k", help="Number of similar notes to return."),
+    query: Optional[str] = typer.Option(None, "--query", help="Instead of providing a query file, semantically search for this given query string.")
 ):
     """
     Search for similar notes using OpenAI embeddings.
 
-    This command loads the index and then loads the separate embeddings file (if available).
-    If the query note in the index does not have a stored embedding, it is computed on the fly.
+    This command loads the index and then loads the embeddings file (if available).
+    The query is determined in one of two ways:
+      • If a --query string is supplied, that string will be embedded.
+      • Otherwise, the note provided via the query_file argument is used.
+
     The top k most similar notes (by cosine similarity) are then displayed using the default format:
 
         {filename}::{title}::{similarity}
@@ -631,17 +674,37 @@ def search_embeddings(
     notes = get_cached_notes(ctx, index_file)
     if not notes:
         raise typer.Exit("No notes loaded from index.")
+
     # Build a mapping: note filename ➔ Note object
     notes_dict: Dict[str, Note] = {n.filename: n for n in notes}
-    # Determine query note by matching its basename (without extension)
-    query_basename = query_file.stem
-    query_note: Optional[Note] = None
-    for note in notes:
-        if Path(note.filename).stem == query_basename:
-            query_note = note
-            break
-    if not query_note:
-        raise typer.Exit(f"Query note matching '{query_file}' not found in index.")
+
+    # If a query string is provided, use it. Otherwise, use the query_file.
+    if query is not None:
+        typer.echo("---Embedding supplied query string...---")
+        query_text = query
+        # When searching by a query string, there is no “query note” from the index.
+        query_id = "__QUERY_STRING__"
+    else:
+        if query_file is None:
+            raise typer.Exit("Either supply a query file or use the --query option with a search string.")
+        # Determine query note by matching its basename (without extension)
+        query_basename = query_file.stem
+        query_note: Optional[Note] = None
+        for note in notes:
+            if Path(note.filename).stem == query_basename:
+                query_note = note
+                break
+        if not query_note:
+            raise typer.Exit(f"Query note matching '{query_file}' not found in index.")
+        query_text = str(query_note.get_field("body"))
+        if not query_text:
+            raise typer.Exit(f"Query note '{query_note.filename}' has no 'body' field to compute an embedding.")
+        query_id = query_note.filename
+
+    # Get or compute the query embedding.
+    # (Note: Even if a query note did not already have an embedding stored, we embed the provided text.)
+    query_embedding = get_embedding(query_text, model=embedding_model)
+
     # Load embeddings mapping from file
     if not embeddings_file.exists():
         raise typer.Exit(f"Embeddings file '{embeddings_file}' not found. Cannot perform search.")
@@ -651,16 +714,6 @@ def search_embeddings(
     except Exception as e:
         raise typer.Exit(f"Error reading embeddings file '{embeddings_file}': {e}")
 
-    # Get or compute the query embedding.
-    query_id = query_note.filename
-    if query_id in embeddings_map:
-        query_embedding = embeddings_map[query_id]
-    else:
-        body_text = str(query_note.get_field("body"))
-        if not body_text:
-            raise typer.Exit(f"Query note '{query_id}' has no 'body' field to compute an embedding.")
-        typer.echo("Query note has no stored embedding. Computing one on the fly...")
-        query_embedding = get_embedding(body_text, model=embedding_model)
     # Build lists of embeddings and corresponding note IDs.
     available_ids = []
     embeddings_list = []
@@ -679,7 +732,7 @@ def search_embeddings(
     query_vector = normalize(np.array(query_embedding, dtype="float32"))
     # Compute cosine similarities.
     similarities = np.dot(embeddings_normalized, query_vector)
-    # Find top k indices, excluding the query note if present.
+    # Find top k indices; if the query is from the index, we can exclude it.
     try:
         query_idx = available_ids.index(query_id)
     except ValueError:
@@ -729,33 +782,55 @@ def info(
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
 ):
     """
-    Display detailed information about the index file, including tag statistics and counts of notes with various features.
+    Display detailed information about the index file, including extra statistics such as median word count,
+    file size, note body coverage, orphan counts, and tag distributions.
     """
     notes = get_cached_notes(ctx, index_file)
     info_data = get_index_info(index_file, notes)
+
     lines = [
-        "ZK Index Information:",
+        "Enhanced ZK Index Information:",
         f"  Number of notes: {info_data.get('note_count', 'N/A')}",
-        f"  Unique tag count: {info_data.get('unique_tag_count', 'N/A')}",
-        f"  Notes with tags: {info_data.get('notes_with_tags_count', 'N/A')} ({(info_data.get('notes_with_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
-        f"  Notes without tags: {info_data.get('notes_without_tags_count', 'N/A')} ({(info_data.get('notes_without_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
-        f"  Top 5 most common tags: {', '.join([f'{tag} ({count})' for tag, count in info_data.get('most_common_tags', [])]) or 'N/A'}",
         f"  Index file size: {(info_data.get('index_file_size_bytes', 0) / 1024):.2f} KB",
+        "",
+        "Content Statistics:",
         f"  Total word count: {info_data.get('total_word_count', 'N/A')}",
-        f"  Average word count: {info_data.get('average_word_count', 'N/A'):.0f}",
+        f"  Average word count: {info_data.get('average_word_count', 0):.2f}",
+        f"  Median word count: {info_data.get('median_word_count', 0):.2f}",
+        f"  Total file size (bytes): {info_data.get('total_file_size_bytes', 'N/A')}",
         f"  Average file size per note: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
+        f"  Median file size: {(info_data.get('median_file_size_bytes', 0) / 1024):.2f} KB",
+        "",
+        "Note Features:",
         f"  Notes with frontmatter: {info_data.get('notes_with_frontmatter_count', 'N/A')}",
         f"  Notes with backlinks: {info_data.get('notes_with_backlinks_count', 'N/A')}",
         f"  Notes with outgoing links: {info_data.get('notes_with_outgoing_links_count', 'N/A')}",
-        f"  Date range of notes: {info_data.get('date_range', 'N/A')}",
-        f"  Dangling links count: {info_data.get('dangling_links_count', 'N/A')}"
+        f"  Orphan notes (no links): {info_data.get('orphan_notes_count', 'N/A')}",
+        f"  Untagged orphan notes: {info_data.get('untagged_orphan_notes_count', 'N/A')}",
+        "",
+        "Tag Statistics:",
+        f"  Unique tags: {info_data.get('unique_tag_count', 'N/A')}",
+        f"  Notes with tags: {info_data.get('notes_with_tags_count', 'N/A')} " +
+            f"({(info_data.get('notes_with_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
+        f"  Notes without tags: {info_data.get('notes_without_tags_count', 'N/A')} " +
+            f"({(info_data.get('notes_without_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
+        f"  Most common tags: {', '.join([f'{tag} ({count})' for tag, count in info_data.get('most_common_tags', [])]) or 'N/A'}",
+        "",
+        "Additional Details:",
+        f"  Notes with body (for embeddings): {info_data.get('notes_with_body_count', 'N/A')}",
+        f"  Notes without body: {info_data.get('notes_without_body_count', 'N/A')}",
+        f"  Date range: {info_data.get('date_range', 'N/A')}",
+        f"  Dangling links count: {info_data.get('dangling_links_count', 'N/A')}",
     ]
+
     output = "\n".join(lines)
     use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
     if use_color:
         sys.stdout.write(colorize(output, 'yellow') + "\n")
     else:
         typer.echo(output)
+
+
 
 @app.command(name="list")
 def list_(
