@@ -2,9 +2,9 @@
 """
 A Python version of the zk_fzf bash script. It reads a YAML config file,
 changes into your notes directory, launches background processes to
-update the notelist, runs the index script and then calls fzf with a
-complex set of keybindings. When fzf finishes, if a temporary file was
-produced, its contents are fed to tmux via send-keys.
+update the notelist, runs the index script (unless skipped) and then calls
+fzf with a complex set of keybindings. When fzf finishes, if a temporary file was
+produced, its contents are fed to tmux (unless disabled) via send-keys.
 """
 
 import os
@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import yaml  # pip install PyYAML
 from pathlib import Path
+import argparse
 
 def load_config(config_file, section):
     """
@@ -31,14 +32,39 @@ def load_config(config_file, section):
     return config[section]
 
 def main():
+    # Parse command-line arguments.
+    parser = argparse.ArgumentParser(
+        description="A Python version of zk_fzf with extra option flags."
+    )
+    parser.add_argument(
+        "--skip-index", action="store_true",
+        help="Skip running the index script before launching fzf."
+    )
+    parser.add_argument(
+        "--skip-notelist", action="store_true",
+        help="Skip launching the background process that updates the notelist."
+    )
+    parser.add_argument(
+        "--skip-tmux", action="store_true",
+        help="Skip sending the link output to tmux."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the commands that would be executed, but do not execute them."
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Enable debug output."
+    )
+    args = parser.parse_args()
+
     # Set up locations
     home = Path(os.environ["HOME"])
     config_file = home / ".config" / "zk_scripts" / "config.yaml"
-    # load the config for our script (the yaml file must have a section "zk_fzf")
+    # load the config for our script (the YAML file must have a section "zk_fzf")
     cfg = load_config(config_file, "zk_fzf")
 
     # Get required configuration items.
-    # (Adjust these keys as needed to match your config.yaml.)
     try:
         NOTES_DIR = cfg["notes_dir"]
         INDEX_FILE = cfg["index_file"]
@@ -46,10 +72,15 @@ def main():
         ZK_INDEX_SCRIPT = cfg["zk_index_script"]
         NOTES_DIARY_SUBDIR = cfg.get("notes_diary_subdir", "")  # optional
         BAT_THEME = cfg.get("bat_theme", "default")
-        # Optionally, other config items...
     except KeyError as e:
         print(f"Missing configuration key: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if args.debug:
+        print("[DEBUG] NOTES_DIR =", NOTES_DIR)
+        print("[DEBUG] INDEX_FILE =", INDEX_FILE)
+        print("[DEBUG] PY_ZK =", PY_ZK)
+        print("[DEBUG] ZK_INDEX_SCRIPT =", ZK_INDEX_SCRIPT)
 
     # Change to NOTES_DIR
     try:
@@ -63,26 +94,53 @@ def main():
     TEMPLINK = temp.name
     temp.close()  # We'll use the file by name
 
-    # Launch a background process that writes a notelist.
-    # Equivalent to: $PY_ZK list --mode notes -i $INDEX_FILE --format-string '[[{filename}|{title}]]' > ~/Documents/notelist.md &
+    # Launch a background process that writes a notelist (unless skipped).
     notelist_path = home / "Documents" / "notelist.md"
-    try:
-        with open(notelist_path, "w") as nl:
-            subprocess.Popen([PY_ZK, "list", "--mode", "notes", "-i", INDEX_FILE,
-                              "--format-string", "[[{filename}|{title}]]"],
-                              stdout=nl)
-    except Exception as e:
-        print(f"Error launching notelist update: {e}", file=sys.stderr)
+    if not args.skip_notelist:
+        try:
+            if args.dry_run:
+                print(f"[DRY-RUN] Would launch: {PY_ZK} list --mode notes -i {INDEX_FILE} --format-string '[[{{filename}}|{{title}}]]'")
+            else:
+                with open(notelist_path, "w") as nl:
+                    subprocess.Popen([PY_ZK, "list", "--mode", "notes", "-i", INDEX_FILE,
+                                      "--format-string", "[[{filename}|{title}]]"],
+                                      stdout=nl)
+                if args.debug:
+                    print("[DEBUG] Background notelist update launched.")
+        except Exception as e:
+            print(f"Error launching notelist update: {e}", file=sys.stderr)
+    else:
+        if args.debug:
+            print("[DEBUG] Skipping notelist update (--skip-notelist).")
 
-    # Run the index script in verbose mode: "$ZK_INDEX_SCRIPT" -v
-    subprocess.run([ZK_INDEX_SCRIPT, "-v"], check=False)
+    # Run the index script (unless skipped)
+    # Run the index script (unless skipped)
+    if not args.skip_index:
+        if args.dry_run:
+            print(f"[DRY-RUN] Would run index script (foreground - regular indexing): {ZK_INDEX_SCRIPT}")
+        else:
+            subprocess.run([ZK_INDEX_SCRIPT], check=False) # Run regular indexing in foreground
+            if args.debug:
+                print("[DEBUG] Regular Index script executed in foreground.")
+
+        # if args.dry_run:
+            # print(f"[DRY-RUN] Would run index script (background - embedding indexing): {ZK_INDEX_SCRIPT} --generate-embeddings &")
+        # else:
+            # subprocess.Popen([ZK_INDEX_SCRIPT, "--generate-embeddings", "--quiet"]) # Run embedding indexing in background
+            # if args.debug:
+                # print("[DEBUG] Embedding Index script launched in background.")
+    else:
+        if args.debug:
+            print("[DEBUG] Skipping index script execution (--skip-index).")
+
 
     # Build the fzf command.
-    # The fzf input comes from a subprocess running "$PY_ZK list --mode notes -i $INDEX_FILE --color always"
+    # The fzf input comes from a subprocess running "$PY_ZK list --mode notes -i INDEX_FILE --color always"
     py_zk_list_cmd = [PY_ZK, "list", "--mode", "notes", "-i", INDEX_FILE, "--color", "always"]
+    if args.debug:
+        print("[DEBUG] py_zk_list_cmd =", " ".join(py_zk_list_cmd))
 
     # Build the list of fzf arguments.
-    # NOTE: We build the bindings by doing variable substitution from our config variables.
     fzf_args = [
         "fzf",
         "--tiebreak=chunk,begin",
@@ -92,8 +150,6 @@ def main():
         "--ellipsis=",
         "--preview-label=",
         "--multi",
-        "--exact",
-        # Bindings – please check that the inner quoting is acceptable to your own fzf version:
         "--bind", f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {NOTES_DIR}/{{+1}}.md]+abort",
         "--bind", f"alt-a:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
         "--bind", f"alt-w:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --mode notes -i {NOTES_DIR}/index.json --stdin --format-string '- [[{{filename}}|{{title}}]]' --separator='' >> workingMem.md ]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
@@ -106,6 +162,8 @@ def main():
         "--bind", f"ctrl-alt-d:execute[nvim {NOTES_DIR}/{NOTES_DIARY_SUBDIR}/$(date '+%Y-%m-%d' -d tomorrow).md;]",
         "--bind", f"alt-9:reload({PY_ZK} list --mode unique-tags -i {INDEX_FILE}  --color always)+clear-query",
         "--bind", f"alt-1:reload(rg -l {{1}} | sed 's/\\.md$//g' | {PY_ZK} list --mode notes -i {INDEX_FILE} --color always --stdin)+clear-query",
+        "--bind", f"alt-2:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} {{1}} --k 50)+clear-query",
+        "--bind", f"alt-3:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} --k 50 --query {{q}})+clear-query",
         "--bind", f"alt-8:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag {{1}}  --color always)+clear-query",
         "--bind", f"?:reload({PY_ZK} info -i {INDEX_FILE} )",
         "--bind", "alt-?:toggle-preview",
@@ -118,14 +176,21 @@ def main():
         "--color", "16",
         "--ansi"
     ]
+    if args.debug:
+        print("[DEBUG] fzf arguments:", " ".join(fzf_args))
 
     # Run the py_zk list command and pipe its output to fzf.
+    if args.dry_run:
+        print(f"[DRY-RUN] Would run: {' '.join(py_zk_list_cmd)} | {' '.join(fzf_args)}")
+        sys.exit(0)
     try:
         p1 = subprocess.Popen(py_zk_list_cmd, stdout=subprocess.PIPE)
         # Run fzf. We forward the output of p1 to fzf as its stdin.
         fzf_result = subprocess.run(fzf_args, stdin=p1.stdout)
         p1.stdout.close()  # allow p1 to receive a SIGPIPE if fzf exits.
         fzf_exit_code = fzf_result.returncode
+        if args.debug:
+            print(f"[DEBUG] fzf exited with code {fzf_exit_code}")
     except Exception as e:
         print(f"Error running fzf: {e}", file=sys.stderr)
         sys.exit(1)
@@ -136,9 +201,15 @@ def main():
             with open(TEMPLINK, "r") as tf:
                 link = tf.read().strip()
             if link:
-                # send the link string to tmux, equivalent to:
-                # tmux send-keys -l "$link"
-                subprocess.run(["tmux", "send-keys", "-l", link])
+                if args.skip_tmux:
+                    if args.debug:
+                        print(f"[DEBUG] Skipping sending to tmux; link: {link}")
+                else:
+                    # send the link string to tmux, equivalent to:
+                    # tmux send-keys -l "$link"
+                    subprocess.run(["tmux", "send-keys", "-l", link])
+                    if args.debug:
+                        print(f"[DEBUG] Sent link to tmux: {link}")
         except Exception as e:
             print(f"Error processing temporary link file: {e}", file=sys.stderr)
     else:
