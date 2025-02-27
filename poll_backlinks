@@ -8,21 +8,26 @@ Features:
       – SIMILAR: similar notes computed using embeddings
       – OUTGOING: notes that the current note links to
   • Filenames are processed relative to NOTES_DIR so that folder names are retained and the ".md" suffix is removed.
-  • In wide terminals, the UI splits vertically (notes list on the left, preview on the right).
+  • In wide terminals, the UI splits vertically (notes list on the left, preview on the right), with clearer borders,
+    scroll progress, and additional visual cues.
   • A help overlay (triggered with "?") shows all the available commands.
   • The header and status bar display the current file, mode, and available commands.
   • Basic colors (set via curses) highlight the current selection and other UI elements.
   • New “g” keybinding: sends a wikilink of the currently selected note to workingMem.md in your notes directory
+  • Additional keys for improving usability:
+      – h     : Reset the preview scroll to the top (helpful if you want to quickly see the start of the note)
+      – Status bar now also displays the scroll percentage when previewing a note
 
 Controls:
-  • l        — Cycle list mode (backlinks → similar → outgoing → backlinks …)
-  • ?        — Toggle help overlay
-  • ↑/k     — Move selection up
-  • ↓/j     — Move selection down
-  • PageUp/PageDown — Scroll the preview window
-  • Enter   — Open the selected note in Neovim
-  • g       — Send wikilink for selected note to workingMem.md
-  • q       — Quit
+  • l      — Cycle list mode (backlinks → similar → outgoing → backlinks …)
+  • ?      — Toggle help overlay
+  • ↑ / k  — Move selection up
+  • ↓ / j  — Move selection down
+  • PageUp/PageDown — Scroll the preview window up/down
+  • h      — Jump preview to top
+  • Enter  — Open the selected note in Neovim
+  • g      — Send wikilink for selected note to workingMem.md
+  • q      — Quit
 """
 
 import os, sys, time, curses, logging, json, textwrap
@@ -43,9 +48,8 @@ CONFIG = {
     "THESIS_DIR": os.path.expanduser("~/Dropbox/notes"),  # for backward compatibility
     "INDEX_FILE": os.path.expanduser("~/Dropbox/notes/index.json"),
     "EMBEDDINGS_FILE": os.path.expanduser("~/Dropbox/notes/embeddings.json"),
-    "POLL_INTERVAL": 2,
     "STATUS_BAR_CLEAR_TIME": 3,
-    "SIMILAR_K": 20,
+    "SIMILAR_K": 30,
     "PREVIEW_SCROLL_LINES": 3,
     "LOG_FILE": os.path.join(os.path.expanduser("~/.cache"), "poll_backlinks.log"),
     "WORKING_MEM": "workingMem.md"   # New file for wikilinks.
@@ -77,8 +81,10 @@ class Preview:
             self.file_lines = [f"Error loading preview: {e}"]
             self.total_lines = 1
 
-    def get_visible_lines(self, height: int, width: int) -> list:
+    def get_visible_lines(self, height: int, width: int) -> (list, float):
         output = []
+        # determine scroll percentage for UI feedback.
+        scroll_pct = (self.view_start / max(1, self.total_lines - height)) * 100
         if self.view_start > 0:
             output.append("^^^")
         for idx in range(self.view_start, min(self.view_start + height, self.total_lines)):
@@ -88,7 +94,7 @@ class Preview:
                 output.append(" " + wline)
         if self.view_start + height < self.total_lines:
             output.append("vvv")
-        return output
+        return output, scroll_pct
 
     def scroll_down(self, amount: int, height: int) -> None:
         max_start = max(0, self.total_lines - height)
@@ -228,35 +234,33 @@ def send_wikilink(ui: UIState):
 
 # --- Help Overlay ---
 def draw_help_overlay(stdscr, height, width):
+    # Create a full-screen overlay with a reverse-video attribute.
+    overlay_win = curses.newwin(height, width, 0, 0)
+    overlay_win.bkgd(' ', curses.color_pair(3))
     overlay_text = [
         "Help - Available Commands:",
         "",
         "↑ / k         : Move selection up",
         "↓ / j         : Move selection down",
         "PgUp / PgDn   : Scroll preview",
+        "h             : Jump preview to top",
         "Enter         : Open selected note in Neovim",
         "l             : Toggle list mode (backlinks, similar, outgoing)",
-        "g             : Send wikilink for the selected note to workingMem.md",
+        "g             : Send wikilink for selected note to workingMem.md",
         "?             : Toggle this help overlay",
         "q             : Quit",
         "",
-        "Press any key to continue..."
+        "Press any key to dismiss help..."
     ]
-    overlay_height = len(overlay_text) + 2
-    overlay_width = max(len(line) for line in overlay_text) + 4
-    start_y = max(0, (height - overlay_height) // 2)
-    start_x = max(0, (width - overlay_width) // 2)
-
-    overlay_win = stdscr.subwin(overlay_height, overlay_width, start_y, start_x)
-    overlay_win.clear()
-    overlay_win.border()
+    # Calculate vertical starting point.
+    start_y = (height - len(overlay_text)) // 2
     for idx, line in enumerate(overlay_text):
+        x = 2 # For center justify (but that's silly!): (width - len(line)) // 2
         try:
-            overlay_win.addnstr(idx+1, 2, line, overlay_width-4)
+            overlay_win.addstr(start_y+idx, x, line, curses.A_BOLD)
         except curses.error:
             pass
-    stdscr.refresh()
-    # Wait for one key press to dismiss help overlay.
+    overlay_win.refresh()
     overlay_win.getch()
 
 # --- UI Drawing Functions ---
@@ -274,24 +278,24 @@ def draw_ui(stdscr, ui: UIState):
         return
 
     # --- Header ---
+    header_height = 3
     try:
-        header_win = stdscr.subwin(3, width, 0, 0)
+        header_win = stdscr.subwin(header_height, width, 0, 0)
     except curses.error:
         header_win = stdscr
     header_win.erase()
     header_win.border()
     header_text = f"File: {os.path.basename(ui.current_file) if ui.current_file else 'None'} | Mode: {ui.list_mode.upper()}"
-    extra_hint = " | Press '?' for help" if not ui.show_help else ""
-    header_win.addnstr(1, 2, header_text + extra_hint, width-4, curses.color_pair(1) | curses.A_BOLD)
+    header_hint = " | Press '?' for help"
+    header_win.addnstr(1, 2, header_text + header_hint, width-4, curses.color_pair(1) | curses.A_BOLD)
 
-    # --- Determine Layout Mode ---
-    # If the terminal is wide enough, split vertically into two panels.
-    main_area_y = 3
+    # --- Main Area: List & Preview ---
+    main_area_y = header_height
     status_bar_height = 3
     main_area_height = height - main_area_y - status_bar_height
 
     if width >= 100:
-        # Vertical split.
+        # Vertical split: notes list on the left, preview on the right.
         list_panel_width = int(width * 0.3)
         preview_panel_width = width - list_panel_width
         # List Panel:
@@ -324,6 +328,7 @@ def draw_ui(stdscr, ui: UIState):
         preview_win.erase()
         preview_win.border()
         preview_win.addnstr(0, 2, " Preview ", preview_panel_width-4, curses.A_BOLD | curses.color_pair(1))
+        scroll_pct = None
         if ui.displayed_list and ui.selected_idx < len(ui.displayed_list):
             entry = ui.displayed_list[ui.selected_idx]
             note_key = entry.split(":", 1)[0]
@@ -333,14 +338,21 @@ def draw_ui(stdscr, ui: UIState):
             else:
                 preview = Preview(filepath)
                 ui.preview_cache[note_key] = preview
-            vis_lines = preview.get_visible_lines(main_area_height-2, preview_panel_width-4)
+            vis_lines, scroll_pct = preview.get_visible_lines(main_area_height-2, preview_panel_width-4)
             for i, line in enumerate(vis_lines[:main_area_height-2]):
                 try:
                     preview_win.addnstr(i+1, 2, line, preview_panel_width-4)
                 except curses.error:
                     pass
+        # Display scroll percentage in the lower right corner.
+        if scroll_pct is not None:
+            perc_text = f"{scroll_pct:3.0f}%"
+            try:
+                preview_win.addnstr(main_area_height-1, preview_panel_width-len(perc_text)-2, perc_text, len(perc_text), curses.A_DIM)
+            except curses.error:
+                pass
     else:
-        # Fallback to vertical (stacked) layout.
+        # Fallback: stacked layout.
         half_area = (main_area_height - 2) // 2
         # List window (top).
         try:
@@ -372,6 +384,7 @@ def draw_ui(stdscr, ui: UIState):
         preview_win.erase()
         preview_win.border()
         preview_win.addnstr(0, 2, " Preview ", width-4, curses.A_BOLD | curses.color_pair(1))
+        scroll_pct = None
         if ui.displayed_list and ui.selected_idx < len(ui.displayed_list):
             entry = ui.displayed_list[ui.selected_idx]
             note_key = entry.split(":", 1)[0]
@@ -381,14 +394,20 @@ def draw_ui(stdscr, ui: UIState):
             else:
                 preview = Preview(filepath)
                 ui.preview_cache[note_key] = preview
-            vis_lines = preview.get_visible_lines(half_area - 1, width-4)
+            vis_lines, scroll_pct = preview.get_visible_lines(half_area - 1, width-4)
             for i, line in enumerate(vis_lines[:half_area - 1]):
                 try:
                     preview_win.addnstr(i+1, 2, line, width-4)
                 except curses.error:
                     pass
+        if scroll_pct is not None:
+            perc_text = f"{scroll_pct:3.0f}%"
+            try:
+                preview_win.addnstr(half_area, width-len(perc_text)-2, perc_text, len(perc_text), curses.A_DIM)
+            except curses.error:
+                pass
 
-    # --- Status / Help Bar ---
+    # --- Status Bar ---
     try:
         status_win = stdscr.subwin(status_bar_height, width, height - status_bar_height, 0)
     except curses.error:
@@ -396,10 +415,9 @@ def draw_ui(stdscr, ui: UIState):
     status_win.erase()
     status_win.border()
     help_text = ("Commands: ↑/k, ↓/j: Move  |  PgUp/PgDn: Scroll Preview  |  l: Toggle Mode  | "
-                 "Enter: Open  |  g: Wikilink  |  q: Quit")
-    disp_status = (ui.status_message if (time.time() - ui.status_message_time
-                                           < CONFIG["STATUS_BAR_CLEAR_TIME"])
-                   else help_text)
+                 "Enter: Open  |  g: Wikilink  |  h: Top  |  q: Quit")
+    disp_status = ui.status_message if (time.time() - ui.status_message_time
+                                         < CONFIG["STATUS_BAR_CLEAR_TIME"]) else help_text
     status_win.addnstr(1, 2, disp_status, width-4, curses.A_BOLD | curses.color_pair(3))
     stdscr.refresh()
 
@@ -475,7 +493,7 @@ def update_ui_state(nvim, ui: UIState, index_path: Path, embeddings_path: Path):
 
 def handle_input(stdscr, nvim, ui: UIState, index_path: Path, embeddings_path: Path) -> bool:
     key = stdscr.getch()
-    # If no key, nothing to do.
+    # If no key was pressed.
     if key == -1:
         return True
 
@@ -504,6 +522,16 @@ def handle_input(stdscr, nvim, ui: UIState, index_path: Path, embeddings_path: P
         send_wikilink(ui)
         return True
 
+    # Jump preview to top with "h" key:
+    if key == ord("h"):
+        curr_entry = get_current_entry(ui)
+        if curr_entry:
+            note_key = curr_entry.split(":", 1)[0]
+            if note_key in ui.preview_cache:
+                ui.preview_cache[note_key].jump_to_top()
+                ui.set_status("Preview set to top.")
+        return True
+
     if key in (curses.KEY_UP, ord("k")):
         if ui.selected_idx > 0:
             ui.selected_idx -= 1
@@ -514,7 +542,6 @@ def handle_input(stdscr, nvim, ui: UIState, index_path: Path, embeddings_path: P
             ui.selected_idx += 1
             # Adjust list offset based on layout.
             if width := stdscr.getmaxyx()[1]:
-                # For vertical split fallback.
                 max_visible = ((stdscr.getmaxyx()[0]-6)//2 - 1) if width < 100 else (stdscr.getmaxyx()[0]-6-2)
                 if ui.selected_idx >= ui.list_offset + max_visible:
                     ui.list_offset += 1
@@ -523,8 +550,7 @@ def handle_input(stdscr, nvim, ui: UIState, index_path: Path, embeddings_path: P
         if curr_entry:
             note_key = curr_entry.split(":", 1)[0]
             if note_key in ui.preview_cache:
-                # Compute available preview height.
-                preview_height = stdscr.getmaxyx()[0] - 6
+                preview_height = stdscr.getmaxyx()[0] // 2 - 10
                 ui.preview_cache[note_key].scroll_down(CONFIG["PREVIEW_SCROLL_LINES"], preview_height)
     elif key == curses.KEY_PPAGE:
         curr_entry = get_current_entry(ui)
@@ -555,8 +581,8 @@ def interactive_ui(stdscr, nvim, index_path: str, embeddings_path: str):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_CYAN, -1)      # Headers & labels.
-    curses.init_pair(2, curses.COLOR_GREEN, -1)     # Selected list items.
-    curses.init_pair(3, curses.COLOR_MAGENTA, -1)   # Help/Status bar.
+    curses.init_pair(2, curses.COLOR_GREEN, -1)     # Selected items.
+    curses.init_pair(3, curses.COLOR_MAGENTA, -1)   # Status / help overlay.
 
     ui = UIState()
     running = True
