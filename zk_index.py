@@ -13,9 +13,10 @@ Command line arguments:
   --exclude-patterns <str>: Override exclude patterns.
   --no-exclude           : Disable exclude patterns (for testing).
   --verbose, -v          : Increase verbosity.
-  --workers <int>        : Number of worker processes for indexing.
+  --quiet, -q            : Run quietly, suppressing most output.
+  --workers <int>        : Number of worker processes for indexing. (Speeds up embedding at large numbers)
   --generate-embeddings  : Generate OpenAI embeddings for each note body.
-  --embedding-model      : OpenAI embedding model to use (default: text-embedding-ada-002).
+  --embedding-model      : OpenAI embedding model to use (default: text-embedding-3-small).
 """
 
 import os
@@ -36,7 +37,7 @@ import openai
 
 # Default config file and number of worker processes.
 CONFIG_FILE = os.path.expanduser("~/.config/zk_scripts/config.yaml")
-DEFAULT_WORKERS = 8
+DEFAULT_WORKERS = 64
 
 # Precompiled regex patterns.
 WIKILINK_RE = re.compile(r'\[\[([^|\]]+)(?:\|[^\]]+)?\]\]')
@@ -82,12 +83,13 @@ def json_ready(data: Any) -> Any:
     else:
         return data
 
-def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None) -> List[str]:
+def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, quiet: bool = False) -> List[str]:
     """Recursively scan a directory, skipping entries that contain any exclude pattern.
     Prints debug information for each file/directory encountered."""
     exclude_patterns = exclude_patterns or []
     paths = []
-    logger.debug(f"Scanning directory: {root}")
+    if not quiet:
+        logger.debug(f"Scanning directory: {root}")
     try:
         with os.scandir(root) as it:
             for entry in it:
@@ -95,17 +97,20 @@ def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None) -
                 skip = False
                 for pattern in exclude_patterns:
                     if pattern in full_path:
-                        logger.debug(f"Excluding {full_path} because it matches pattern '{pattern}'")
+                        if not quiet:
+                            logger.debug(f"Excluding {full_path} because it matches pattern '{pattern}'")
                         skip = True
                         break
                 if skip:
                     continue
                 if entry.is_file():
-                    logger.debug(f"Found file: {full_path}")
+                    if not quiet:
+                        logger.debug(f"Found file: {full_path}")
                     paths.append(full_path)
                 elif entry.is_dir():
-                    logger.debug(f"Entering directory: {full_path}")
-                    paths.extend(scandir_recursive(full_path, exclude_patterns))
+                    if not quiet:
+                        logger.debug(f"Entering directory: {full_path}")
+                    paths.extend(scandir_recursive(full_path, exclude_patterns, quiet))
     except PermissionError as e:
         logger.warning(f"Permission error accessing directory: {root}. Skipping. Error: {e}")
     except OSError as e:
@@ -153,13 +158,14 @@ def extract_wikilinks_filtered(body: str) -> List[str]:
 def calculate_word_count(body: str) -> int:
     return len(body.split())
 
-def get_embedding(text: str, model: str = "text-embedding-ada-002", max_retries: int = 5) -> List[float]:
+def get_embedding(text: str, model: str = "text-embedding-3-small", max_retries: int = 5, quiet: bool = False) -> List[float]:
     for attempt in range(max_retries):
         try:
             result = openai.embeddings.create(input=text, model=model)
             return result.data[0].embedding
         except Exception as e:
-            logger.debug(f"Error fetching embedding (attempt {attempt+1}/{max_retries}): {e}")
+            if not quiet:
+                logger.debug(f"Error fetching embedding (attempt {attempt+1}/{max_retries}): {e}")
             time.sleep(1)
     raise Exception("Failed to fetch embedding after multiple attempts.")
 
@@ -169,7 +175,8 @@ def process_markdown_file(filepath: str,
                           fd_exclude_patterns: List[str],
                           notes_dir: str,
                           generate_embeddings: bool = False,
-                          embedding_model: str = "text-embedding-ada-002") -> Optional[Dict[str, Any]]:
+                          embedding_model: str = "text-embedding-3-small",
+                          quiet: bool = False) -> Optional[Dict[str, Any]]:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -197,7 +204,7 @@ def process_markdown_file(filepath: str,
         if not openai.api_key:
             openai.api_key = os.getenv("OPEN_AI_KEY")
         try:
-            embedding = get_embedding(body, model=embedding_model)
+            embedding = get_embedding(body, model=embedding_model, quiet=quiet)
             result["embedding"] = embedding
         except Exception as e:
             logger.error(f"Failed to fetch embedding for {filepath}: {e}")
@@ -205,26 +212,28 @@ def process_markdown_file(filepath: str,
 
 # --- State handling ---
 
-def load_index_state(state_file: str) -> Dict[str, float]:
+def load_index_state(state_file: str, quiet: bool = False) -> Dict[str, float]:
     if os.path.exists(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                logger.debug(f"Loaded state from {state_file}: {state}")
+                if not quiet:
+                    logger.debug(f"Loaded state from {state_file}: {state}")
                 return state
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Error reading state file '{state_file}': {e}. Starting fresh.")
     return {}
 
-def save_index_state(state_file: str, index_state: Dict[str, float]) -> None:
+def save_index_state(state_file: str, index_state: Dict[str, float], quiet: bool = False) -> None:
     try:
         with open(state_file, 'w', encoding='utf-8') as f:
             json.dump(index_state, f, indent=2)
-        logger.info(f"Saved state to {state_file}: {index_state}")
+        if not quiet:
+            logger.debug(f"Saved state to {state_file}: {index_state}")
     except OSError as e:
         logger.error(f"Error writing state file '{state_file}': {e}")
 
-def load_existing_index(index_file: str) -> Dict[str, Dict[str, Any]]:
+def load_existing_index(index_file: str, quiet: bool = False) -> Dict[str, Dict[str, Any]]:
     existing_index: Dict[str, Dict[str, Any]] = {}
     if os.path.exists(index_file):
         try:
@@ -235,16 +244,17 @@ def load_existing_index(index_file: str) -> Dict[str, Dict[str, Any]]:
             logger.warning(f"Error loading index file '{index_file}': {e}. Starting with empty index.")
     return existing_index
 
-def write_updated_index(index_file: str, updated_index_data: List[Dict[str, Any]]) -> None:
+def write_updated_index(index_file: str, updated_index_data: List[Dict[str, Any]], quiet: bool = False) -> None:
     try:
         with open(index_file, 'w', encoding='utf-8') as outf:
             json.dump(updated_index_data, outf, indent=2)
-        logger.info(f"Index file updated at: {index_file}")
+        if not quiet:
+            logger.info(f"Index file updated at: {index_file}")
     except OSError as e:
         logger.error(f"Error writing index file '{index_file}': {e}")
         sys.exit(1)
 
-def load_embeddings_file(embeddings_file: str) -> Dict[str, Any]:
+def load_embeddings_file(embeddings_file: str, quiet: bool = False) -> Dict[str, Any]:
     if os.path.exists(embeddings_file):
         try:
             with open(embeddings_file, 'r', encoding='utf-8') as f:
@@ -253,24 +263,25 @@ def load_embeddings_file(embeddings_file: str) -> Dict[str, Any]:
             logger.warning(f"Error loading embeddings file '{embeddings_file}': {e}. Using empty embeddings.")
     return {}
 
-def write_embeddings_file(embeddings_file: str, embeddings_data: Dict[str, Any]) -> None:
+def write_embeddings_file(embeddings_file: str, embeddings_data: Dict[str, Any], quiet: bool = False) -> None:
     try:
         with open(embeddings_file, 'w', encoding='utf-8') as f:
             json.dump(embeddings_data, f, indent=2)
-        logger.info(f"Embeddings file updated at: {embeddings_file}")
+        if not quiet:
+            logger.info(f"Embeddings file updated at: {embeddings_file}")
     except OSError as e:
         logger.error(f"Error writing embeddings file '{embeddings_file}': {e}")
         sys.exit(1)
 
-def remove_index_state_file(state_file: str, verbose: bool) -> None:
+def remove_index_state_file(state_file: str, verbose: bool, quiet: bool = False) -> None:
     if os.path.exists(state_file):
         try:
             os.remove(state_file)
-            if verbose:
+            if verbose and not quiet:
                 logger.info(f"Removed state file: {state_file}")
         except OSError as e:
             logger.warning(f"Could not remove state file '{state_file}': {e}")
-    elif verbose:
+    elif verbose and not quiet:
         logger.info(f"State file not found, skipping removal: {state_file}")
 
 # --- Main indexing logic ---
@@ -285,13 +296,16 @@ def main() -> None:
     parser.add_argument("--exclude-patterns", help="Override exclude patterns (as a string; e.g., '-E tmp/ -E templates/')")
     parser.add_argument("--no-exclude", action="store_true", help="Disable all exclude patterns (for testing)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Increase verbosity of output.")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Run quietly, suppressing most output.")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Number of worker processes (default: {DEFAULT_WORKERS})")
     parser.add_argument("--generate-embeddings", action="store_true", help="Generate OpenAI embeddings for each note body")
-    parser.add_argument("--embedding-model", default="text-embedding-ada-002", help="OpenAI embedding model to use (default: text-embedding-ada-002)")
+    parser.add_argument("--embedding-model", default="text-embedding-3-small", help="OpenAI embedding model to use (default: text-embedding-3-small)")
     args = parser.parse_args()
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+    elif args.quiet:
+        logger.setLevel(logging.CRITICAL) # Or logging.ERROR, logging.WARNING, depending on how quiet you want it.
 
     config = load_config(args.config_file)
 
@@ -322,35 +336,37 @@ def main() -> None:
             exclude_patterns = matches if matches else config_val.split()
         else:
             exclude_patterns = config_val
-    logger.debug(f"Using exclude patterns: {exclude_patterns}")
+    logger.debug(f"Using exclude patterns: {exclude_patterns}") # Keep debug even in quiet mode for troubleshooting
 
     # Define state files.
     state_file = index_file.replace(".json", "_state.json")
     embedding_state_file = embeddings_file.replace(".json", "_state.json") if embeddings_file else None
 
     if args.full_reindex:
-        remove_index_state_file(state_file, args.verbose)
+        remove_index_state_file(state_file, args.verbose, args.quiet)
         if embedding_state_file:
-            remove_index_state_file(embedding_state_file, args.verbose)
+            remove_index_state_file(embedding_state_file, args.verbose, args.quiet)
 
     previous_index_state: Dict[str, float] = {}
     if not args.full_reindex:
-        previous_index_state = load_index_state(state_file)
+        previous_index_state = load_index_state(state_file, args.quiet)
     current_index_state: Dict[str, float] = {}
 
     previous_embeddings_state: Dict[str, float] = {}
     if args.generate_embeddings and embedding_state_file:
-        previous_embeddings_state = load_index_state(embedding_state_file)
+        previous_embeddings_state = load_index_state(embedding_state_file, args.quiet)
 
-    existing_index = load_existing_index(index_file)
+    existing_index = load_existing_index(index_file, args.quiet)
     existing_embeddings: Dict[str, Any] = {}
     if args.generate_embeddings and embeddings_file:
-        existing_embeddings = load_embeddings_file(embeddings_file)
+        existing_embeddings = load_embeddings_file(embeddings_file, args.quiet)
 
-    logger.debug("Scanning files")
-    markdown_files = [fp for fp in scandir_recursive(notes_dir, exclude_patterns=exclude_patterns)
+    if not args.quiet:
+        logger.debug("Scanning files")
+    markdown_files = [fp for fp in scandir_recursive(notes_dir, exclude_patterns=exclude_patterns, quiet=args.quiet)
                       if fp.lower().endswith(".md")]
-    logger.info(f"Found {len(markdown_files)} markdown files.")
+    if not args.quiet:
+        logger.info(f"Found {len(markdown_files)} markdown files.")
 
     current_note_ids = set()
     for fp in markdown_files:
@@ -369,7 +385,8 @@ def main() -> None:
             del existing_index[note_id]
         if args.generate_embeddings and note_id in existing_embeddings:
             del existing_embeddings[note_id]
-        logger.info(f"Note deleted: {note_id}")
+        if not args.quiet:
+            logger.info(f"Note deleted: {note_id}")
 
     files_to_process = []
     for fp in markdown_files:
@@ -381,53 +398,68 @@ def main() -> None:
         except OSError as e:
             logger.warning(f"Error accessing file {fp}: {e}")
 
-    logger.info(f"Files to process: {len(files_to_process)}")
-    new_embeddings: Dict[str, Any] = {}
-    with tqdm(total=len(files_to_process), desc="Processing files") as pbar:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            futures = {executor.submit(process_markdown_file,
-                                         fp,
-                                         fd_exclude_patterns=exclude_patterns,
-                                         notes_dir=notes_dir,
-                                         generate_embeddings=args.generate_embeddings,
-                                         embedding_model=args.embedding_model): fp
-                       for fp in files_to_process}
-            for future in as_completed(futures):
-                fp = futures[future]
-                try:
-                    result = future.result()
-                    if result:
-                        note_id = result["filename"]
-                        if args.generate_embeddings and "embedding" in result:
-                            new_embeddings[note_id] = result.pop("embedding")
-                        existing_index[note_id] = result
-                    else:
-                        logger.debug(f"No result returned for file: {fp}")
-                except Exception as e:
-                    logger.error(f"Error processing file {fp}: {e}")
-                pbar.update(1)
+    if not args.quiet:
+        logger.info(f"Files to process: {len(files_to_process)}")
 
-    with tqdm(total=len(existing_index), desc="Calculating backlinks") as bk_pbar:
-        backlink_map: Dict[str, set] = {}
-        for note in existing_index.values():
-            for target in note.get("outgoing_links", []):
-                if target in existing_index:
-                    backlink_map.setdefault(target, set()).add(note["filename"])
-            bk_pbar.update(1)
-        for note_id, note in existing_index.items():
-            note["backlinks"] = sorted(list(backlink_map.get(note_id, [])))
+    new_embeddings: Dict[str, Any] = {}
+    if args.quiet:
+        # No progress bar in quiet mode
+        pbar_iterator = files_to_process
+    else:
+        pbar_iterator = tqdm(files_to_process, desc="Processing files")
+
+    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(process_markdown_file,
+                                     fp,
+                                     fd_exclude_patterns=exclude_patterns,
+                                     notes_dir=notes_dir,
+                                     generate_embeddings=args.generate_embeddings,
+                                     embedding_model=args.embedding_model,
+                                     quiet=args.quiet): fp
+                   for fp in pbar_iterator} # Use pbar_iterator here
+        for future in as_completed(futures):
+            fp = futures[future]
+            try:
+                result = future.result()
+                if result:
+                    note_id = result["filename"]
+                    if args.generate_embeddings and "embedding" in result:
+                        new_embeddings[note_id] = result.pop("embedding")
+                    existing_index[note_id] = result
+                else:
+                    if not args.quiet:
+                        logger.debug(f"No result returned for file: {fp}")
+            except Exception as e:
+                logger.error(f"Error processing file {fp}: {e}")
+            if not args.quiet and isinstance(pbar_iterator, tqdm): # Explicit type check for tqdm instance
+                pbar_iterator.update(1)
+
+    if args.quiet:
+        bk_pbar_iterator = existing_index.values() # No progress bar
+    else:
+        bk_pbar_iterator = tqdm(existing_index.values(), desc="Calculating backlinks")
+
+    backlink_map: Dict[str, set] = {}
+    for note in bk_pbar_iterator: # Use bk_pbar_iterator here
+        for target in note.get("outgoing_links", []):
+            if target in existing_index:
+                backlink_map.setdefault(target, set()).add(note["filename"])
+        if not args.quiet and isinstance(bk_pbar_iterator, tqdm): # Explicit type check for tqdm instance
+            bk_pbar_iterator.update(1)
+    for note_id, note in existing_index.items():
+        note["backlinks"] = sorted(list(backlink_map.get(note_id, [])))
 
     updated_index_data = list(existing_index.values())
-    write_updated_index(index_file, updated_index_data)
-    save_index_state(state_file, current_index_state)
+    write_updated_index(index_file, updated_index_data, args.quiet)
+    save_index_state(state_file, current_index_state, args.quiet)
     if args.generate_embeddings and embeddings_file:
         existing_embeddings.update(new_embeddings)
         for key in list(existing_embeddings.keys()):
             if key not in existing_index:
                 del existing_embeddings[key]
-        write_embeddings_file(embeddings_file, existing_embeddings)
+        write_embeddings_file(embeddings_file, existing_embeddings, args.quiet)
         if embedding_state_file:
-            save_index_state(embedding_state_file, current_index_state)
+            save_index_state(embedding_state_file, current_index_state, args.quiet)
 
 if __name__ == "__main__":
     main()
