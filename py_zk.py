@@ -9,7 +9,7 @@ This tool processes a JSON index file of notes and supports:
     backlinks, outgoing links, date ranges, arbitrary field value, and word count.
   • Outputting in various formats: plain text (with custom format strings),
     CSV, JSON, or a pretty table.
-  • Displaying index information (summary statistics).
+  • Displaying index information (summary statistics with enhanced details).
   • Listing unique tags, orphan notes (no incoming/outgoing links) and dangling links.
   • Loading default settings from a YAML config file.
   • Searching for similar notes using OpenAI embeddings (loaded from a separate embeddings file).
@@ -55,7 +55,7 @@ from pathlib import Path
 from io import StringIO
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Union
-from collections import Counter
+from collections import Counter, defaultdict
 import os
 
 import yaml                     # pip install pyyaml
@@ -530,62 +530,60 @@ def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
 def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
     try:
-        info['note_count'] = len(notes)
-        tags = set()
+        note_count = len(notes)
+        info['note_count'] = note_count
+
+        # Collect tag and word/file size info
+        all_tags = []
+        tag_counter = Counter()
         total_word_count = 0
         total_file_size = 0
-        notes_with_frontmatter = 0
-        notes_with_backlinks = 0
-        notes_with_outgoing_links = 0
-        notes_with_tags = 0
-        notes_with_body = 0
         word_counts = []
         file_sizes = []
-        tag_counter = Counter()
-        orphan_count = 0      # notes with neither outgoing links nor backlinks
+        tag_counts = []  # track number of tags per note
+        orphan_count = 0
         untagged_orphan_count = 0
         dates = []
+        extra_fields_counter = Counter()
 
         for note in notes:
-            # Tags and tag frequency
-            if note.tags:
-                notes_with_tags += 1
-                tag_counter.update(note.tags)
-                tags.update(note.tags)
-            # Body field: check whether the note has a non-empty 'body' field.
-            if str(note.get_field("body")).strip():
-                notes_with_body += 1
-            # Frontmatter (any extra fields)
-            if note._extra_fields:
-                notes_with_frontmatter += 1
-            # Backlinks and outgoing links
-            if note.backlinks:
-                notes_with_backlinks += 1
-            if note.outgoing_links:
-                notes_with_outgoing_links += 1
-            # Word count & file size
+            # Count tags per note
+            tag_count = len(note.tags)
+            tag_counts.append(tag_count)
+            all_tags.extend(note.tags)
+            tag_counter.update(note.tags)
+            # Extra frontmatter keys:
+            for key in note._extra_fields.keys():
+                extra_fields_counter[key] += 1
+            # Word count and file size:
             total_word_count += note.word_count
             total_file_size += note.file_size
             word_counts.append(note.word_count)
             file_sizes.append(note.file_size)
-            # Date range
+            # Date range:
             if note.dateModified:
                 dt = parse_iso_datetime(note.dateModified)
                 if dt:
                     dates.append(dt.date())
-            # Orphan check
+            # Orphan check:
             if not note.outgoing_links and not note.backlinks:
                 orphan_count += 1
                 if not note.tags:
                     untagged_orphan_count += 1
 
-        # Calculate averages and medians
-        avg_word_count = total_word_count / len(notes) if notes else 0
-        avg_file_size = total_file_size / len(notes) if notes else 0
+        avg_word_count = total_word_count / note_count if note_count else 0
+        avg_file_size = total_file_size / note_count if note_count else 0
         median_word_count = float(np.median(word_counts)) if word_counts else 0
         median_file_size = float(np.median(file_sizes)) if file_sizes else 0
 
-        # Determine date range
+        min_word_count = min(word_counts) if word_counts else 0
+        max_word_count = max(word_counts) if word_counts else 0
+        min_file_size = min(file_sizes) if file_sizes else 0
+        max_file_size = max(file_sizes) if file_sizes else 0
+
+        avg_tags_per_note = sum(tag_counts) / note_count if note_count else 0
+        median_tags_per_note = float(np.median(tag_counts)) if tag_counts else 0
+
         if dates:
             min_date = min(dates)
             max_date = max(dates)
@@ -593,36 +591,34 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
         else:
             date_range = "N/A"
 
-        # Most common tags (top 5)
-        most_common_tags = tag_counter.most_common(5)
+        # Extra fields details as sorted list of (field, count)
+        extra_fields_details = extra_fields_counter.most_common()
 
-        # Compile all info
         info.update({
-            'unique_tag_count': len(tags),
             'index_file_size_bytes': index_file.stat().st_size if index_file.exists() else 0,
             'total_word_count': total_word_count,
             'average_word_count': avg_word_count,
             'median_word_count': median_word_count,
+            'min_word_count': min_word_count,
+            'max_word_count': max_word_count,
             'total_file_size_bytes': total_file_size,
             'average_file_size_bytes': avg_file_size,
             'median_file_size_bytes': median_file_size,
-            'notes_with_frontmatter_count': notes_with_frontmatter,
-            'notes_with_backlinks_count': notes_with_backlinks,
-            'notes_with_outgoing_links_count': notes_with_outgoing_links,
-            'notes_with_tags_count': notes_with_tags,
-            'notes_without_tags_count': len(notes) - notes_with_tags,
-            'notes_with_body_count': notes_with_body,
-            'notes_without_body_count': len(notes) - notes_with_body,
-            'date_range': date_range,
-            'dangling_links_count': sum(len(links) for links in find_dangling_links(notes).values()),
+            'min_file_size_bytes': min_file_size,
+            'max_file_size_bytes': max_file_size,
+            'average_tags_per_note': avg_tags_per_note,
+            'median_tags_per_note': median_tags_per_note,
             'orphan_notes_count': orphan_count,
             'untagged_orphan_notes_count': untagged_orphan_count,
-            'most_common_tags': most_common_tags,
+            'date_range': date_range,
+            'dangling_links_count': sum(len(links) for links in find_dangling_links(notes).values()),
+            'unique_tag_count': len(tag_counter.keys()),
+            'most_common_tags': tag_counter.most_common(10),
+            'extra_frontmatter_keys': extra_fields_details,
         })
     except Exception as e:
         logging.exception(f"Error gathering index info: {e}")
     return info
-
 
 # ---------------- Embeddings Search Helpers ----------------
 
@@ -702,7 +698,6 @@ def search_embeddings(
         query_id = query_note.filename
 
     # Get or compute the query embedding.
-    # (Note: Even if a query note did not already have an embedding stored, we embed the provided text.)
     query_embedding = get_embedding(query_text, model=embedding_model)
 
     # Load embeddings mapping from file
@@ -732,7 +727,7 @@ def search_embeddings(
     query_vector = normalize(np.array(query_embedding, dtype="float32"))
     # Compute cosine similarities.
     similarities = np.dot(embeddings_normalized, query_vector)
-    # Find top k indices; if the query is from the index, we can exclude it.
+    # Find top k indices; if the query is from the index, exclude it.
     try:
         query_idx = available_ids.index(query_id)
     except ValueError:
@@ -782,45 +777,59 @@ def info(
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
 ):
     """
-    Display detailed information about the index file, including extra statistics such as median word count,
-    file size, note body coverage, orphan counts, and tag distributions.
+    Display detailed information about the index file, including enhanced statistics:
+
+     • Overall note count and index file size
+     • Total, minimum, maximum, average, and median word counts and file sizes
+     • Date range of modification dates present in the index
+     • Tag statistics: unique tags, average tags per note, most common tags (top 10)
+     • Orphan and untagged orphan note metrics (with percentages)
+     • Extra frontmatter fields used across notes
     """
     notes = get_cached_notes(ctx, index_file)
     info_data = get_index_info(index_file, notes)
+    note_count = info_data.get('note_count', 0)
 
     lines = [
         "Enhanced ZK Index Information:",
-        f"  Number of notes: {info_data.get('note_count', 'N/A')}",
+        f"  Total notes: {note_count}",
         f"  Index file size: {(info_data.get('index_file_size_bytes', 0) / 1024):.2f} KB",
         "",
-        "Content Statistics:",
+        "Word Count Statistics:",
         f"  Total word count: {info_data.get('total_word_count', 'N/A')}",
+        f"  Minimum word count: {info_data.get('min_word_count', 0)}",
+        f"  Maximum word count: {info_data.get('max_word_count', 0)}",
         f"  Average word count: {info_data.get('average_word_count', 0):.2f}",
         f"  Median word count: {info_data.get('median_word_count', 0):.2f}",
-        f"  Total file size (bytes): {info_data.get('total_file_size_bytes', 'N/A')}",
-        f"  Average file size per note: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
+        "",
+        "File Size Statistics (bytes):",
+        f"  Total file size: {info_data.get('total_file_size_bytes', 'N/A')}",
+        f"  Minimum file size: {info_data.get('min_file_size_bytes', 0)}",
+        f"  Maximum file size: {info_data.get('max_file_size_bytes', 0)}",
+        f"  Average file size: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
         f"  Median file size: {(info_data.get('median_file_size_bytes', 0) / 1024):.2f} KB",
         "",
-        "Note Features:",
-        f"  Notes with frontmatter: {info_data.get('notes_with_frontmatter_count', 'N/A')}",
-        f"  Notes with backlinks: {info_data.get('notes_with_backlinks_count', 'N/A')}",
-        f"  Notes with outgoing links: {info_data.get('notes_with_outgoing_links_count', 'N/A')}",
-        f"  Orphan notes (no links): {info_data.get('orphan_notes_count', 'N/A')}",
-        f"  Untagged orphan notes: {info_data.get('untagged_orphan_notes_count', 'N/A')}",
+        "Modification Date Range:",
+        f"  Date range: {info_data.get('date_range', 'N/A')}",
         "",
         "Tag Statistics:",
         f"  Unique tags: {info_data.get('unique_tag_count', 'N/A')}",
-        f"  Notes with tags: {info_data.get('notes_with_tags_count', 'N/A')} " +
-            f"({(info_data.get('notes_with_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
-        f"  Notes without tags: {info_data.get('notes_without_tags_count', 'N/A')} " +
-            f"({(info_data.get('notes_without_tags_count', 0) / info_data.get('note_count', 1) * 100):.2f}%)",
-        f"  Most common tags: {', '.join([f'{tag} ({count})' for tag, count in info_data.get('most_common_tags', [])]) or 'N/A'}",
+        f"  Average tags per note: {info_data.get('average_tags_per_note', 0):.2f}",
+        f"  Median tags per note: {info_data.get('median_tags_per_note', 0):.2f}",
+        f"  Most common tags (top 10): " +
+            (", ".join([f'{tag} ({count})' for tag, count in info_data.get('most_common_tags', [])]) or "N/A"),
         "",
-        "Additional Details:",
-        f"  Notes with body (for embeddings): {info_data.get('notes_with_body_count', 'N/A')}",
-        f"  Notes without body: {info_data.get('notes_without_body_count', 'N/A')}",
-        f"  Date range: {info_data.get('date_range', 'N/A')}",
-        f"  Dangling links count: {info_data.get('dangling_links_count', 'N/A')}",
+        "Orphan Note Metrics:",
+        f"  Orphan notes (no incoming/outgoing links): {info_data.get('orphan_notes_count', 'N/A')} " +
+            f"({(info_data.get('orphan_notes_count', 0) / note_count * 100) if note_count else 0:.2f}%)",
+        f"  Untagged orphan notes: {info_data.get('untagged_orphan_notes_count', 'N/A')} " +
+            f"({(info_data.get('untagged_orphan_notes_count', 0) / note_count * 100) if note_count else 0:.2f}%)",
+        f"  Dangling links count across notes: {info_data.get('dangling_links_count', 'N/A')}",
+        "",
+        "Extra Frontmatter Fields:",
+        f"  Fields found: " +
+            (", ".join([f"{field} ({count})" for field, count in info_data.get('extra_frontmatter_keys', [])])
+             if info_data.get('extra_frontmatter_keys') else "N/A"),
     ]
 
     output = "\n".join(lines)
@@ -829,8 +838,6 @@ def info(
         sys.stdout.write(colorize(output, 'yellow') + "\n")
     else:
         typer.echo(output)
-
-
 
 @app.command(name="list")
 def list_(
