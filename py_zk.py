@@ -17,10 +17,14 @@ This tool processes a JSON index file of notes and supports:
 Hierarchical Tags: Tags can be hierarchical, using '/' as a separator (e.g., 'project/active', 'topic/programming').
 When filtering by a parent tag (e.g., 'project'), notes with any child tags (like 'project/active') will also be included.
 
+Date Metadata – DATE-CREATED CHANGE:
+  Now both dateModified and dateCreated keys (from frontmatter) are treated as primary date fields.
+  The Note dataclass now includes a dateCreated field and users can choose to sort by it.
+
 Usage examples:
 
   List notes (filter by tag “project” using OR logic and table output):
-      python py_zk.py list -i index.json --mode notes --filter-tag project --tag-mode or --output-format table
+      python py_zk.py list -i index.json --mode notes --filter-tag project --tag-mode or
 
   List orphan notes:
       python py_zk.py list -i index.json --mode orphans
@@ -102,6 +106,8 @@ class Note:
     title: str = ""
     tags: List[str] = field(default_factory=list)
     dateModified: str = ""
+    # DATE-CREATED CHANGE: Add dateCreated field.
+    dateCreated: str = ""
     aliases: List[str] = field(default_factory=list)
     givenName: str = ""
     familyName: str = ""
@@ -114,8 +120,8 @@ class Note:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Note:
         standard_fields = {
-            'filename', 'title', 'tags', 'dateModified', 'aliases',
-            'givenName', 'familyName', 'outgoing_links', 'word_count', 'file_size'
+            'filename', 'title', 'tags', 'dateModified', 'dateCreated',  # DATE-CREATED CHANGE: include dateCreated
+            'aliases', 'givenName', 'familyName', 'outgoing_links', 'backlinks', 'word_count', 'file_size'
         }
         extra_fields = {k: v for k, v in data.items() if k not in standard_fields}
         return cls(
@@ -123,6 +129,7 @@ class Note:
             title=data.get('title', '') or "",
             tags=data.get('tags', []) if isinstance(data.get('tags', []), list) else [],
             dateModified=data.get('dateModified', ''),
+            dateCreated=data.get('dateCreated', ''),  # DATE-CREATED CHANGE: capture dateCreated
             aliases=data.get('aliases', []) if isinstance(data.get('aliases', []), list) else [],
             givenName=data.get('givenName', ''),
             familyName=data.get('familyName', '') or "",
@@ -327,6 +334,7 @@ def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None
         return []
     filtered = []
     for note in notes:
+        # Default filtering by dateModified:
         if note.dateModified:
             note_dt = parse_iso_datetime(note.dateModified)
             if not note_dt:
@@ -495,8 +503,8 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
         'plain': ['filename', 'title', 'tags'],
         'csv': ['filename', 'title', 'tags', 'outgoing_links', 'backlinks'],
         'table': ['filename', 'title', 'tags', 'outgoing_links', 'backlinks'],
-        'json': ['filename', 'title', 'tags', 'dateModified', 'aliases', 'givenName', 'familyName',
-                 'outgoing_links', 'backlinks', 'word_count', 'file_size']
+        'json': ['filename', 'title', 'tags', 'dateModified', 'dateCreated', 'aliases', 'givenName', 'familyName',
+                 'outgoing_links', 'backlinks', 'word_count', 'file_size']  # DATE-CREATED CHANGE: include dateCreated
     }
     effective_fields = fields if fields else default_fields_map.get(output_format, ['filename', 'title', 'tags'])
     match output_format:
@@ -510,13 +518,17 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
             lines = format_plain(notes, effective_fields, separator, format_string, use_color)
             return "\n".join(lines)
 
+# ---------------- Sorting ----------------
+
 def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
     sort_options = {
         'filename': (lambda n: n.filename, False),
         'title': (lambda n: n.title, False),
         'dateModified': (lambda n: parse_iso_datetime(n.dateModified) or datetime.datetime.min, True),
         'word_count': (lambda n: n.word_count, True),
-        'file_size': (lambda n: n.file_size, True)
+        'file_size': (lambda n: n.file_size, True),
+        # DATE-CREATED CHANGE: support sorting by dateCreated as well.
+        'dateCreated': (lambda n: parse_iso_datetime(n.dateCreated) or datetime.datetime.min, True)
     }
     if sort_by in sort_options:
         key_func, reverse = sort_options[sort_by]
@@ -565,7 +577,11 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
                 dt = parse_iso_datetime(note.dateModified)
                 if dt:
                     dates.append(dt.date())
-            # Orphan check:
+            # DATE-CREATED CHANGE: Optionally, you could include dateCreated in the date range.
+            if note.dateCreated:
+                dt2 = parse_iso_datetime(note.dateCreated)
+                if dt2:
+                    dates.append(dt2.date())
             if not note.outgoing_links and not note.backlinks:
                 orphan_count += 1
                 if not note.tags:
@@ -623,7 +639,6 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
 # ---------------- Embeddings Search Helpers ----------------
 
 def get_embedding(text: str, model: str = "text-embedding-3-small", max_retries: int = 5) -> List[float]:
-    # Ensure the API key is set
     if not openai.api_key:
         openai.api_key = os.getenv("OPEN_AI_KEY")
     for attempt in range(max_retries):
@@ -781,7 +796,7 @@ def info(
 
      • Overall note count and index file size
      • Total, minimum, maximum, average, and median word counts and file sizes
-     • Date range of modification dates present in the index
+     • Date range of modification and creation dates present in the index
      • Tag statistics: unique tags, average tags per note, most common tags (top 10)
      • Orphan and untagged orphan note metrics (with percentages)
      • Extra frontmatter fields used across notes
@@ -809,7 +824,7 @@ def info(
         f"  Average file size: {(info_data.get('average_file_size_bytes', 0) / 1024):.2f} KB",
         f"  Median file size: {(info_data.get('median_file_size_bytes', 0) / 1024):.2f} KB",
         "",
-        "Modification Date Range:",
+        "Modification and Creation Date Range:",
         f"  Date range: {info_data.get('date_range', 'N/A')}",
         "",
         "Tag Statistics:",
@@ -849,7 +864,7 @@ def list_(
     separator: Optional[str] = typer.Option(None, help="Separator for plain text output (default: '::')."),
     format_string: Optional[str] = typer.Option(None, help="Custom format string for plain text output."),
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
-    sort_by: Optional[str] = typer.Option(None, "-s", help="Field to sort by (dateModified, filename, title, word_count, file_size)."),
+    sort_by: Optional[str] = typer.Option(None, "-s", help="Field to sort by (dateModified, dateCreated, filename, title, word_count, file_size)."),
     output_file: Optional[Path] = typer.Option(None, "--output-file", help="Write output to file."),
     filter_tag: Optional[List[str]] = typer.Option(None, help="Tags to filter on (hierarchical tags supported)."),
     tag_mode: Optional[str] = typer.Option(None, help="Tag filter mode: 'and' (default) or 'or'."),
