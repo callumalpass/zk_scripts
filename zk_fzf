@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-A Python version of the zk_fzf bash script. It reads a YAML config file,
-changes into your notes directory, launches background processes to
-update the notelist, runs the index script (unless skipped) and then calls
-fzf with a complex set of keybindings. When fzf finishes, if a temporary file was
-produced, its contents are fed to tmux (unless disabled) via send-keys.
+A Python version of the zk_fzf bash script.
+This version factors out the fzf keybindings and their descriptions,
+and provides both a command-line flag (--list-hotkeys) and a new fzf hotkey
+(Alt‑h) that displays a list of available hotkeys and their functions.
 """
 
 import os
@@ -31,46 +30,178 @@ def load_config(config_file, section):
         sys.exit(1)
     return config[section]
 
+def build_fzf_bindings(cfg, TEMPLINK, NOTES_DIR, INDEX_FILE, PY_ZK, ZK_INDEX_SCRIPT,
+                       NOTES_DIARY_SUBDIR, BAT_THEME, script_path):
+    """
+    Return a list of fzf binding strings and also a separate list of dictionaries
+    mapping hotkeys to a human-friendly description.
+    We add an extra binding on Alt-h that shows this help by executing the script with --list-hotkeys.
+    """
+    # A list of dictionaries; each dict has:
+    #   'key': hotkey (for our help listing)
+    #   'fzf_cmd': the fzf binding string (to provide to fzf)
+    #   'desc': a human-readable description of the command
+    bindings = [
+        {
+            "key": "Enter",
+            "fzf_cmd": f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {NOTES_DIR}/{{+1}}.md]+abort",
+            "desc": "Open the selected note in nvim (via the obsidian socket)."
+        },
+        {
+            "key": "alt-a",
+            "fzf_cmd": f"alt-a:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always)",
+            "desc": "Run the index script and refresh the notes list."
+        },
+        {
+            "key": "alt-c",
+            "fzf_cmd": f"alt-c:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list -i {INDEX_FILE} --color always -s dateCreated --fields filename --fields title --fields tags --fields dateCreated)",
+            "desc": "Sort by creation date"
+        },
+        {
+            "key": "alt-w",
+            "fzf_cmd": f"alt-w:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --mode notes -i {NOTES_DIR}/index.json --stdin --format-string '- [[{{filename}}|{{title}}]]' --separator='' >> workingMem.md]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always)",
+            "desc": "Append selected note as a bullet to workingMem.md and refresh."
+        },
+        {
+            "key": "alt-o",
+            "fzf_cmd": f"alt-o:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode orphans -i {INDEX_FILE} --color always)",
+            "desc": "Run index script and show orphan notes."
+        },
+        {
+            "key": "alt-O",
+            "fzf_cmd": f"alt-O:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode untagged-orphans -i {INDEX_FILE} --color always)",
+            "desc": "Run index script and show untagged orphan notes."
+        },
+        {
+            "key": "alt-e",
+            "fzf_cmd": f"alt-e:reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always --exclude-tag literature_note --exclude-tag person --exclude-tag task --exclude-tag diary --exclude-tag journal)",
+            "desc": "Refresh list excluding specific tags."
+        },
+        {
+            "key": "alt-y",
+            "fzf_cmd": f"alt-y:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --mode notes -i {NOTES_DIR}/index.json --stdin --format-string '[[{{filename}}|{{title}}]]' --separator='' > {TEMPLINK}]+abort",
+            "desc": "Save selected note into a temporary file and exit fzf."
+        },
+        {
+            "key": "ctrl-e",
+            "fzf_cmd": f"ctrl-e:execute[nvim {{+1}}.md ; {ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always)",
+            "desc": "Edit note in nvim then reindex and refresh."
+        },
+        {
+            "key": "ctrl-alt-r",
+            "fzf_cmd": f"ctrl-alt-r:execute[rm {{+1}}.md]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always)",
+            "desc": "Delete the selected note and refresh."
+        },
+        {
+            "key": "ctrl-alt-d",
+            "fzf_cmd": f"ctrl-alt-d:execute[nvim {NOTES_DIR}/{NOTES_DIARY_SUBDIR}/$(date '+%Y-%m-%d' -d tomorrow).md;]",
+            "desc": "Open tomorrow's diary note in nvim."
+        },
+        {
+            "key": "alt-9",
+            "fzf_cmd": f"alt-9:reload({PY_ZK} list --mode unique-tags -i {INDEX_FILE}  --color always)+clear-query",
+            "desc": "Reload the list to show unique tags."
+        },
+        {
+            "key": "alt-1",
+            "fzf_cmd": f"alt-1:reload(rg -l {{1}} | sed 's/\\.md$//g' | {PY_ZK} list --mode notes -i {INDEX_FILE} --color always --stdin)+clear-query",
+            "desc": "Search files via ripgrep and show matching notes."
+        },
+        {
+            "key": "alt-2",
+            "fzf_cmd": f"alt-2:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} {{1}} --k 50)+clear-query",
+            "desc": "Search notes using embeddings (k=50)."
+        },
+        {
+            "key": "alt-3",
+            "fzf_cmd": f"alt-3:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} --k 50 --query {{q}})+clear-query",
+            "desc": "Search notes using a freeform query with embeddings."
+        },
+        {
+            "key": "alt-8",
+            "fzf_cmd": f"alt-8:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag {{1}}  --color always)+clear-query",
+            "desc": "Reload the list filtering for a given tag."
+        },
+        {
+            "key": "?",
+            "fzf_cmd": f"?:reload({PY_ZK} info -i {INDEX_FILE} )",
+            "desc": "Display additional info for the selected note."
+        },
+        {
+            "key": "alt-?",
+            "fzf_cmd": "alt-?:toggle-preview",
+            "desc": "Toggle fzf preview window on/off."
+        },
+        {
+            "key": "alt-j",
+            "fzf_cmd": f"alt-j:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag diary --color always)",
+            "desc": "Reload list to show notes tagged 'diary'."
+        },
+        {
+            "key": "alt-g",
+            "fzf_cmd": f"alt-g:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --stdin -i {INDEX_FILE} --format-string '- [[{{filename}}|{{title}}]]' >> {{1}}.md]+clear-selection",
+            "desc": "Append formatted selected note to file."
+        },
+        {
+            "key": "alt-b",
+            "fzf_cmd": f"alt-b:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag literature_note --color always)",
+            "desc": "Reload list showing notes with tag 'literature_note'."
+        },
+        {
+            "key": "ctrl-s",
+            "fzf_cmd": "ctrl-s:reload(rg -U '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\\.md//' )",
+            "desc": "Reload list sorted by modification time via ripgrep."
+        },
+        # New hotkey: Alt-h shows the list of hotkeys via re-invoking this script.
+        {
+            "key": "alt-h",
+            "fzf_cmd": f"alt-h:execute[python3 {script_path} --list-hotkeys | fzf]",
+            "desc": "Show this hotkeys help (prints the list of hotkeys)."
+        }
+    ]
+
+    fzf_bindings = []
+    hotkeys_info = []
+    for binding in bindings:
+        fzf_bindings += ["--bind", binding["fzf_cmd"]]
+        hotkeys_info.append((binding["key"], binding["desc"]))
+    return fzf_bindings, hotkeys_info
+
+def print_hotkeys(hotkeys_info):
+    print("Available fzf hotkeys and their functions:")
+    for key, desc in hotkeys_info:
+        print(f"  {key:<12} : {desc}")
+    print()
+
 def main():
     # Parse command-line arguments.
     parser = argparse.ArgumentParser(
         description="A Python version of zk_fzf with extra option flags."
     )
-    parser.add_argument(
-        "--skip-index", action="store_true",
-        help="Skip running the index script before launching fzf."
-    )
-    parser.add_argument(
-        "--skip-notelist", action="store_true",
-        help="Skip launching the background process that updates the notelist."
-    )
-    parser.add_argument(
-        "--skip-tmux", action="store_true",
-        help="Skip sending the link output to tmux."
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Print the commands that would be executed, but do not execute them."
-    )
-    parser.add_argument(
-        "--debug", action="store_true",
-        help="Enable debug output."
-    )
+    parser.add_argument("--skip-index", action="store_true",
+                        help="Skip running the index script before launching fzf.")
+    parser.add_argument("--skip-notelist", action="store_true",
+                        help="Skip launching the background process that updates the notelist.")
+    parser.add_argument("--skip-tmux", action="store_true",
+                        help="Skip sending the link output to tmux.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the commands that would be executed, but do not execute them.")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug output.")
+    parser.add_argument("--list-hotkeys", action="store_true",
+                        help="Print a list of available fzf hotkeys and their functions, then exit.")
     args = parser.parse_args()
 
-    # Set up locations
+    # If --list-hotkeys is passed, we still need to build our bindings so that the hotkeys help can be printed.
     home = Path(os.environ["HOME"])
     config_file = home / ".config" / "zk_scripts" / "config.yaml"
-    # load the config for our script (the YAML file must have a section "zk_fzf")
     cfg = load_config(config_file, "zk_fzf")
-
-    # Get required configuration items.
     try:
         NOTES_DIR = cfg["notes_dir"]
         INDEX_FILE = cfg["index_file"]
-        PY_ZK = cfg["py_zk"]               # e.g. the python script to run zk commands
+        PY_ZK = cfg["py_zk"]
         ZK_INDEX_SCRIPT = cfg["zk_index_script"]
-        NOTES_DIARY_SUBDIR = cfg.get("notes_diary_subdir", "")  # optional
+        NOTES_DIARY_SUBDIR = cfg.get("notes_diary_subdir", "")
         BAT_THEME = cfg.get("bat_theme", "default")
     except KeyError as e:
         print(f"Missing configuration key: {e}", file=sys.stderr)
@@ -82,17 +213,28 @@ def main():
         print("[DEBUG] PY_ZK =", PY_ZK)
         print("[DEBUG] ZK_INDEX_SCRIPT =", ZK_INDEX_SCRIPT)
 
-    # Change to NOTES_DIR
     try:
         os.chdir(NOTES_DIR)
     except Exception as e:
         print(f"Unable to change directory to {NOTES_DIR}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Create a temporary file (like mktemp) that fzf bindings will write to.
+    # Create a temporary file (like mktemp) for use by one of the keybindings.
     temp = tempfile.NamedTemporaryFile(delete=False)
     TEMPLINK = temp.name
-    temp.close()  # We'll use the file by name
+    temp.close()
+
+    # Determine our script's full path (to use in the Alt-h binding).
+    script_path = os.path.abspath(__file__)
+
+    # Build the fzf bindings (and also the hotkeys information).
+    fzf_bindings, hotkeys_info = build_fzf_bindings(cfg, TEMPLINK, NOTES_DIR, INDEX_FILE,
+                                                    PY_ZK, ZK_INDEX_SCRIPT,
+                                                    NOTES_DIARY_SUBDIR, BAT_THEME,
+                                                    script_path)
+    if args.list_hotkeys:
+        print_hotkeys(hotkeys_info)
+        sys.exit(0)
 
     # Launch a background process that writes a notelist (unless skipped).
     notelist_path = home / "Documents" / "notelist.md"
@@ -106,7 +248,7 @@ def main():
                                       "--format-string", "[[{filename}|{title}]]"],
                                       stdout=nl)
                 if args.debug:
-                    print("[DEBUG] Background notelist update launched.")
+                    print("[DEBUG] Launched background notelist update.")
         except Exception as e:
             print(f"Error launching notelist update: {e}", file=sys.stderr)
     else:
@@ -114,33 +256,22 @@ def main():
             print("[DEBUG] Skipping notelist update (--skip-notelist).")
 
     # Run the index script (unless skipped)
-    # Run the index script (unless skipped)
     if not args.skip_index:
         if args.dry_run:
-            print(f"[DRY-RUN] Would run index script (foreground - regular indexing): {ZK_INDEX_SCRIPT}")
+            print(f"[DRY-RUN] Would run index script: {ZK_INDEX_SCRIPT}")
         else:
-            subprocess.run([ZK_INDEX_SCRIPT], check=False) # Run regular indexing in foreground
+            subprocess.run([ZK_INDEX_SCRIPT], check=False)
             if args.debug:
-                print("[DEBUG] Regular Index script executed in foreground.")
-
-        # if args.dry_run:
-            # print(f"[DRY-RUN] Would run index script (background - embedding indexing): {ZK_INDEX_SCRIPT} --generate-embeddings &")
-        # else:
-            # subprocess.Popen([ZK_INDEX_SCRIPT, "--generate-embeddings", "--quiet"]) # Run embedding indexing in background
-            # if args.debug:
-                # print("[DEBUG] Embedding Index script launched in background.")
+                print("[DEBUG] Ran index script in foreground.")
     else:
         if args.debug:
-            print("[DEBUG] Skipping index script execution (--skip-index).")
-
+            print("[DEBUG] Skipping index script (--skip-index).")
 
     # Build the fzf command.
-    # The fzf input comes from a subprocess running "$PY_ZK list --mode notes -i INDEX_FILE --color always"
     py_zk_list_cmd = [PY_ZK, "list", "--mode", "notes", "-i", INDEX_FILE, "--color", "always"]
     if args.debug:
         print("[DEBUG] py_zk_list_cmd =", " ".join(py_zk_list_cmd))
 
-    # Build the list of fzf arguments.
     fzf_args = [
         "fzf",
         "--tiebreak=chunk,begin",
@@ -150,52 +281,31 @@ def main():
         "--ellipsis=",
         "--preview-label=",
         "--multi",
-        "--bind", f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {NOTES_DIR}/{{+1}}.md]+abort",
-        "--bind", f"alt-a:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
-        "--bind", f"alt-w:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --mode notes -i {NOTES_DIR}/index.json --stdin --format-string '- [[{{filename}}|{{title}}]]' --separator='' >> workingMem.md ]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
-        "--bind", f"alt-o:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode orphans -i {INDEX_FILE} --color always )",
-        "--bind", f"alt-O:execute[{ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode untagged-orphans -i {INDEX_FILE} --color always )",
-        "--bind", f"alt-e:reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always --exclude-tag literature_note --exclude-tag person --exclude-tag task --exclude-tag diary --exclude-tag journal  )",
-        "--bind", f"alt-y:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --mode notes -i {NOTES_DIR}/index.json --stdin --format-string '[[{{filename}}|{{title}}]]' --separator='' > {TEMPLINK}]+abort",
-        "--bind", f"ctrl-e:execute[nvim {{+1}}.md ; {ZK_INDEX_SCRIPT}]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
-        "--bind", f"ctrl-alt-r:execute[rm {{+1}}.md]+reload:({PY_ZK} list --mode notes -i {INDEX_FILE} --color always )",
-        "--bind", f"ctrl-alt-d:execute[nvim {NOTES_DIR}/{NOTES_DIARY_SUBDIR}/$(date '+%Y-%m-%d' -d tomorrow).md;]",
-        "--bind", f"alt-9:reload({PY_ZK} list --mode unique-tags -i {INDEX_FILE}  --color always)+clear-query",
-        "--bind", f"alt-1:reload(rg -l {{1}} | sed 's/\\.md$//g' | {PY_ZK} list --mode notes -i {INDEX_FILE} --color always --stdin)+clear-query",
-        "--bind", f"alt-2:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} {{1}} --k 50)+clear-query",
-        "--bind", f"alt-3:reload( {PY_ZK} search-embeddings -i {INDEX_FILE} --k 50 --query {{q}})+clear-query",
-        "--bind", f"alt-8:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag {{1}}  --color always)+clear-query",
-        "--bind", f"?:reload({PY_ZK} info -i {INDEX_FILE} )",
-        "--bind", "alt-?:toggle-preview",
-        "--bind", f"alt-j:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag diary  --color always)",
-        "--bind", f"alt-g:execute[echo {{+1}} | sed 's/ /\\n/g' | {PY_ZK} list --stdin -i {INDEX_FILE} --format-string '- [[{{filename}}|{{title}}]]' >> {{1}}.md ]+clear-selection",
-        "--bind", f"alt-b:reload({PY_ZK} list --mode notes -i {INDEX_FILE} --filter-tag literature_note  --color always)",
-        "--bind", "ctrl-s:reload(rg '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\\.md//' )",
-        "--preview", f"echo \"Backlinks:\";  rg '\\['{{1}} -l ; bat --theme=\"{BAT_THEME}\" --color=always --decorations=never {{1}}.md -H {{2}} 2> /dev/null || bat {{1}}.md ",
-        "--preview-window", "wrap:50%:<50(up)",
-        "--color", "16",
-        "--ansi"
+        "--wrap",
     ]
+    fzf_args.extend(fzf_bindings)
+    preview_cmd = f"echo \"Backlinks:\"; {PY_ZK} list -i {INDEX_FILE} --filter-outgoing-link {{1}} --color always; bat --theme=\"{BAT_THEME}\" --color=always --decorations=never {{1}}.md -H {{2}} 2> /dev/null || bat {{1}}.md"
+    fzf_args.extend(["--preview", preview_cmd,
+                     "--preview-window", "wrap:50%:<50(up)",
+                     "--color", "16",
+                     "--ansi"])
     if args.debug:
-        print("[DEBUG] fzf arguments:", " ".join(fzf_args))
+        print("[DEBUG] fzf args:", " ".join(fzf_args))
 
-    # Run the py_zk list command and pipe its output to fzf.
     if args.dry_run:
         print(f"[DRY-RUN] Would run: {' '.join(py_zk_list_cmd)} | {' '.join(fzf_args)}")
         sys.exit(0)
     try:
         p1 = subprocess.Popen(py_zk_list_cmd, stdout=subprocess.PIPE)
-        # Run fzf. We forward the output of p1 to fzf as its stdin.
         fzf_result = subprocess.run(fzf_args, stdin=p1.stdout)
-        p1.stdout.close()  # allow p1 to receive a SIGPIPE if fzf exits.
-        fzf_exit_code = fzf_result.returncode
+        p1.stdout.close()
         if args.debug:
-            print(f"[DEBUG] fzf exited with code {fzf_exit_code}")
+            print(f"[DEBUG] fzf returned code {fzf_result.returncode}")
     except Exception as e:
         print(f"Error running fzf: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # After fzf finishes, check whether the temporary file exists.
+    # Process the temporary link file (if it exists)
     if os.path.exists(TEMPLINK):
         try:
             with open(TEMPLINK, "r") as tf:
@@ -203,10 +313,8 @@ def main():
             if link:
                 if args.skip_tmux:
                     if args.debug:
-                        print(f"[DEBUG] Skipping sending to tmux; link: {link}")
+                        print(f"[DEBUG] Skipping sending tmux; link: {link}")
                 else:
-                    # send the link string to tmux, equivalent to:
-                    # tmux send-keys -l "$link"
                     subprocess.run(["tmux", "send-keys", "-l", link])
                     if args.debug:
                         print(f"[DEBUG] Sent link to tmux: {link}")
@@ -215,7 +323,6 @@ def main():
     else:
         sys.exit(0)
 
-    # Optionally, clean up the temporary file.
     try:
         os.remove(TEMPLINK)
     except Exception:
@@ -223,4 +330,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
