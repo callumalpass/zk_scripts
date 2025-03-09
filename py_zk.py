@@ -49,25 +49,32 @@ For more details run:
 """
 
 from __future__ import annotations
-import json
 import csv
 import datetime
 import re
 import logging
 import sys
+import os
+import json
+import calendar
 from pathlib import Path
 from io import StringIO
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Union
-from collections import Counter, defaultdict
-import os
-
-import yaml                     # pip install pyyaml
-from tabulate import tabulate   # pip install tabulate
-import typer
-import numpy as np
-import openai
+from collections import Counter
 import time
+import numpy as np
+import typer
+import openai
+
+# Try to import orjson (a fast JSON serializer/deserializer). Fall back if not available.
+try:
+    import orjson
+except ImportError:
+    orjson = None
+
+from tabulate import tabulate   # pip install tabulate
+import yaml                     # pip install pyyaml
 
 app = typer.Typer(help="Modern Note Management tool (ZK style) built with Typer.")
 
@@ -145,6 +152,21 @@ class Note:
             return getattr(self, field_name)
         return self._extra_fields.get(field_name, "")
 
+# ---------------- JSON I/O Using Optimized Library ----------------
+
+def _fast_json_loads(json_bytes: bytes) -> Any:
+    if orjson:
+        return orjson.loads(json_bytes)
+    else:
+        return json.loads(json_bytes.decode("utf-8"))
+
+def _fast_json_dumps(data: Any) -> str:
+    if orjson:
+        # orjson.dumps returns bytes.
+        return orjson.dumps(data, option=orjson.OPT_INDENT_2).decode("utf-8")
+    else:
+        return json.dumps(data, indent=2, ensure_ascii=False)
+
 # ---------------- Loading and Config ----------------
 
 def load_config(config_file: Optional[Path]) -> Dict[str, Any]:
@@ -159,13 +181,11 @@ def load_config(config_file: Optional[Path]) -> Dict[str, Any]:
 
 def load_index_data(index_file: Path) -> List[Note]:
     try:
-        data = json.loads(index_file.read_text(encoding="utf-8"))
+        file_bytes = index_file.read_bytes()
+        data = _fast_json_loads(file_bytes)
         return [Note.from_dict(item) for item in data]
     except FileNotFoundError:
         logging.error(f"Index file '{index_file}' not found.")
-        raise typer.Exit(1)
-    except json.JSONDecodeError as e:
-        logging.error(f"Invalid JSON in '{index_file}': {e}")
         raise typer.Exit(1)
     except Exception as e:
         logging.exception(f"Unexpected error reading '{index_file}': {e}")
@@ -262,7 +282,7 @@ def generate_graph_html(notes: List[Note], output_file: Path):
 </body>
 </html>
     """
-    html_content = template.replace('/* GRAPH_DATA_PLACEHOLDER */', json.dumps(graph_data))
+    html_content = template.replace('/* GRAPH_DATA_PLACEHOLDER */', _fast_json_dumps(graph_data))
     try:
         output_file.write_text(html_content, encoding="utf-8")
     except Exception as e:
@@ -272,32 +292,18 @@ def generate_graph_html(notes: List[Note], output_file: Path):
 # ---------------- Filtering Functions ----------------
 
 def filter_by_tag(notes: List[Note], tags: List[str], tag_mode: str = 'and', exclude_tags: Optional[List[str]] = None) -> List[Note]:
-    """
-    For each note, check if its tags match the given filter.
-    Hierarchical matching: a note tag matches if it is exactly equal to a filter tag or starts with 'filter_tag/'.
-    """
     filtered_notes = []
     filter_tags = set(tags)
     exclude_set = set(exclude_tags) if exclude_tags else set()
-
     for note in notes:
         note_tags = set(note.tags)
         if tag_mode == 'or':
-            include = any(
-                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
-                for ft in filter_tags
-            )
+            include = any(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
         elif tag_mode == 'and':
-            include = all(
-                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
-                for ft in filter_tags
-            )
+            include = all(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
         else:
             logging.error(f"Invalid tag_mode: '{tag_mode}'. Defaulting to 'and'.")
-            include = all(
-                any(nt == ft or nt.startswith(ft + '/') for nt in note_tags)
-                for ft in filter_tags
-            )
+            include = all(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
         if include and not exclude_set.intersection(note_tags):
             filtered_notes.append(note)
     return filtered_notes
@@ -468,12 +474,12 @@ def format_json(notes: List[Note]) -> str:
         note_dict = asdict(note)
         note_dict.update(note_dict.pop('_extra_fields', {}))
         notes_list.append(note_dict)
-    return json.dumps(notes_list, indent=2, ensure_ascii=False)
+    return _fast_json_dumps(notes_list)
 
 def format_dangling_links_output(d_map: Dict[str, List[str]], output_format: str = 'plain', use_color: bool = False) -> str:
     match output_format:
         case 'json':
-            return json.dumps(d_map, indent=2, ensure_ascii=False)
+            return _fast_json_dumps(d_map)
         case 'csv':
             out = StringIO()
             writer = csv.writer(out)
@@ -558,6 +564,10 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
         dates = []
         extra_fields_counter = Counter()
 
+        # NEW: Counters for creation dates
+        creation_day_counter = Counter()
+        creation_year_counter = Counter()
+
         for note in notes:
             # Count tags per note
             tag_count = len(note.tags)
@@ -572,20 +582,26 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
             total_file_size += note.file_size
             word_counts.append(note.word_count)
             file_sizes.append(note.file_size)
-            # Date range:
+            # Date range using dateModified:
             if note.dateModified:
                 dt = parse_iso_datetime(note.dateModified)
                 if dt:
                     dates.append(dt.date())
-            # DATE-CREATED CHANGE: Optionally, you could include dateCreated in the date range.
-            if note.dateCreated:
-                dt2 = parse_iso_datetime(note.dateCreated)
-                if dt2:
-                    dates.append(dt2.date())
+                else:
+                    logging.warning(f"Could not parse dateModified for '{note.filename}'")
+            # For orphan metrics:
             if not note.outgoing_links and not note.backlinks:
                 orphan_count += 1
                 if not note.tags:
                     untagged_orphan_count += 1
+
+            # NEW: Determine creation date using dateCreated; if missing then fallback on dateModified.
+            dt_created = parse_iso_datetime(note.dateCreated)
+            if not dt_created:
+                dt_created = parse_iso_datetime(note.dateModified)
+            if dt_created:
+                creation_day_counter[dt_created.strftime("%A")] += 1
+                creation_year_counter[dt_created.year] += 1
 
         avg_word_count = total_word_count / note_count if note_count else 0
         avg_file_size = total_file_size / note_count if note_count else 0
@@ -606,6 +622,20 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
             date_range = f"{min_date} to {max_date}"
         else:
             date_range = "N/A"
+
+        # NEW: Create a day-of-week distribution (ordered Monday -> Sunday)
+        days_order = list(calendar.day_name)
+        notes_by_day = {day: creation_day_counter.get(day, 0) for day in days_order}
+
+        # NEW: Determine peak creation day if available.
+        if creation_day_counter:
+            peak_day, peak_count = creation_day_counter.most_common(1)[0]
+            peak_creation_day = f"{peak_day} ({peak_count} notes)"
+        else:
+            peak_creation_day = "N/A"
+
+        # NEW: Distribution by year.
+        notes_by_year = dict(sorted(creation_year_counter.items()))
 
         # Extra fields details as sorted list of (field, count)
         extra_fields_details = extra_fields_counter.most_common()
@@ -631,6 +661,10 @@ def get_index_info(index_file: Path, notes: List[Note]) -> Dict[str, Any]:
             'unique_tag_count': len(tag_counter.keys()),
             'most_common_tags': tag_counter.most_common(10),
             'extra_frontmatter_keys': extra_fields_details,
+            # NEW analysis:
+            'notes_by_day_of_week': notes_by_day,
+            'peak_creation_day': peak_creation_day,
+            'notes_by_year': notes_by_year,
         })
     except Exception as e:
         logging.exception(f"Error gathering index info: {e}")
@@ -800,6 +834,7 @@ def info(
      • Tag statistics: unique tags, average tags per note, most common tags (top 10)
      • Orphan and untagged orphan note metrics (with percentages)
      • Extra frontmatter fields used across notes
+     • New: Distribution of notes by day of the week (based on creation date) and by year.
     """
     notes = get_cached_notes(ctx, index_file)
     info_data = get_index_info(index_file, notes)
@@ -845,8 +880,25 @@ def info(
         f"  Fields found: " +
             (", ".join([f"{field} ({count})" for field, count in info_data.get('extra_frontmatter_keys', [])])
              if info_data.get('extra_frontmatter_keys') else "N/A"),
+        "",
+        "Notes Creation Analysis:",
+        "  Notes by Day of the Week:",
     ]
-
+    # Add line for each day (Monday - Sunday)
+    notes_by_day: Dict[str, int] = info_data.get('notes_by_day_of_week', {})
+    for day in list(calendar.day_name):
+        lines.append(f"    {day}: {notes_by_day.get(day, 0)}")
+    lines.extend([
+        f"  Peak creation day: {info_data.get('peak_creation_day', 'N/A')}",
+        "",
+        "Notes by Year:",
+    ])
+    notes_by_year: Dict[Any, int] = info_data.get('notes_by_year', {})
+    if notes_by_year:
+        for year, count in notes_by_year.items():
+            lines.append(f"    {year}: {count}")
+    else:
+        lines.append("    N/A")
     output = "\n".join(lines)
     use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
     if use_color:
@@ -889,13 +941,11 @@ def list_(
     sort_by = merge_config_option(ctx, sort_by, "sort_by", "dateModified")
     tag_mode = merge_config_option(ctx, tag_mode, "tag_mode", "and")
     use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
-
     mode = mode.lower()
     allowed_modes = ("notes", "unique-tags", "orphans", "dangling-links", "untagged-orphans")
     if mode not in allowed_modes:
         typer.echo(f"Invalid mode '{mode}'. Allowed values: {', '.join(allowed_modes)}", err=True)
         raise typer.Exit(1)
-
     if mode == "unique-tags":
         notes = get_cached_notes(ctx, index_file)
         tags = sorted({tag for note in notes for tag in note.tags})
@@ -912,7 +962,7 @@ def list_(
         notes = get_cached_notes(ctx, index_file)
         d_map = find_dangling_links(notes)
         output = format_dangling_links_output(d_map, output_format, use_color)
-    else:  # mode == "notes"
+    else:
         notes = get_cached_notes(ctx, index_file)
         if filter_tag:
             notes = filter_by_tag(notes, filter_tag, tag_mode, exclude_tag)
@@ -936,7 +986,6 @@ def list_(
             notes = filter_by_word_count_range(notes, min_word_count, max_word_count)
         notes = sort_notes(notes, sort_by)
         output = format_output(notes, output_format, fields, separator, format_string, use_color)
-
     if output_file:
         try:
             output_file.write_text(output, encoding="utf-8")
@@ -965,4 +1014,5 @@ def graph(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
     app()
+
 
