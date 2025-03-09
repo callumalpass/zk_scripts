@@ -200,6 +200,11 @@ def process_markdown_file(filepath: str,
         "references": references,
     }
     result.update(meta)
+    # DATE-CREATED CHANGE:
+    # If a note has no dateCreated but does have dateModified, then default dateCreated to dateModified.
+    if "dateModified" in result and "dateCreated" not in result:
+        result["dateCreated"] = result["dateModified"]
+    # Alternatively, if both fields are absent, you may leave them empty.
     if generate_embeddings:
         if not openai.api_key:
             openai.api_key = os.getenv("OPEN_AI_KEY")
@@ -288,7 +293,8 @@ def remove_index_state_file(state_file: str, verbose: bool, quiet: bool = False)
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Incremental Fast ZK indexer with Backlinks, Citation Extraction, and optional Embedding Generation")
+        description="Incremental Fast ZK indexer with Backlinks, Citation Extraction, optional Embedding Generation "
+                    "and now full support for both dateModified and dateCreated metadata keys.")
     parser.add_argument("--notes-dir", help="Override notes directory")
     parser.add_argument("--index-file", help="Override index file path")
     parser.add_argument("--config-file", default=CONFIG_FILE, help="Specify config file path")
@@ -305,7 +311,7 @@ def main() -> None:
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     elif args.quiet:
-        logger.setLevel(logging.CRITICAL) # Or logging.ERROR, logging.WARNING, depending on how quiet you want it.
+        logger.setLevel(logging.CRITICAL)  # Or logging.ERROR, logging.WARNING, depending on how quiet you want it.
 
     config = load_config(args.config_file)
 
@@ -321,13 +327,10 @@ def main() -> None:
     if args.no_exclude:
         exclude_patterns: List[str] = []
     elif args.exclude_patterns:
-        # Use regex to grab only the tokens following "-E" (if present) so that we
-        # discard any "-E" markers.
         matches = re.findall(r'-E\s+([^\s]+)', args.exclude_patterns)
         if matches:
             exclude_patterns = matches
         else:
-            # If no "-E" tokens, assume a space-separated list.
             exclude_patterns = args.exclude_patterns.split()
     else:
         config_val = resolve_config_value(config, "zk_index.fd_exclude_patterns", fd_exclude_patterns_default)
@@ -336,7 +339,7 @@ def main() -> None:
             exclude_patterns = matches if matches else config_val.split()
         else:
             exclude_patterns = config_val
-    logger.debug(f"Using exclude patterns: {exclude_patterns}") # Keep debug even in quiet mode for troubleshooting
+    logger.debug(f"Using exclude patterns: {exclude_patterns}")
 
     # Define state files.
     state_file = index_file.replace(".json", "_state.json")
@@ -403,7 +406,6 @@ def main() -> None:
 
     new_embeddings: Dict[str, Any] = {}
     if args.quiet:
-        # No progress bar in quiet mode
         pbar_iterator = files_to_process
     else:
         pbar_iterator = tqdm(files_to_process, desc="Processing files")
@@ -416,7 +418,7 @@ def main() -> None:
                                      generate_embeddings=args.generate_embeddings,
                                      embedding_model=args.embedding_model,
                                      quiet=args.quiet): fp
-                   for fp in pbar_iterator} # Use pbar_iterator here
+                   for fp in pbar_iterator}
         for future in as_completed(futures):
             fp = futures[future]
             try:
@@ -431,20 +433,20 @@ def main() -> None:
                         logger.debug(f"No result returned for file: {fp}")
             except Exception as e:
                 logger.error(f"Error processing file {fp}: {e}")
-            if not args.quiet and isinstance(pbar_iterator, tqdm): # Explicit type check for tqdm instance
+            if not args.quiet and isinstance(pbar_iterator, tqdm):
                 pbar_iterator.update(1)
 
     if args.quiet:
-        bk_pbar_iterator = existing_index.values() # No progress bar
+        bk_pbar_iterator = existing_index.values()
     else:
         bk_pbar_iterator = tqdm(existing_index.values(), desc="Calculating backlinks")
 
     backlink_map: Dict[str, set] = {}
-    for note in bk_pbar_iterator: # Use bk_pbar_iterator here
+    for note in bk_pbar_iterator:
         for target in note.get("outgoing_links", []):
             if target in existing_index:
                 backlink_map.setdefault(target, set()).add(note["filename"])
-        if not args.quiet and isinstance(bk_pbar_iterator, tqdm): # Explicit type check for tqdm instance
+        if not args.quiet and isinstance(bk_pbar_iterator, tqdm):
             bk_pbar_iterator.update(1)
     for note_id, note in existing_index.items():
         note["backlinks"] = sorted(list(backlink_map.get(note_id, [])))
