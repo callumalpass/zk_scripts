@@ -79,7 +79,6 @@ def get_config():
       - editor (from env EDITOR_CMD or default)
       - llm_cmd (command for generating titles)
       - llm_instruct (the instruction/prompt)
-      - yaml_tag_edit_cmd (external script to modify YAML tags)
       - valid_tags_cmd (command that lists valid tags)
     """
     cfg = load_yaml_config()
@@ -91,12 +90,11 @@ def get_config():
     llm_path = bibview_cfg.get("llm_path", os.path.join(mybin_dir, "swllm"))
     llm_cmd = os.getenv("LLM_CMD", f"{llm_path} -m gemini-2.0-flash")
     llm_instruct = os.getenv("LLM_INSTRUCT", DEFAULT_LLM_INSTRUCT)
-    yaml_tag_edit_cmd = os.getenv("YAML_TAG_EDIT_CMD", os.path.join(mybin_dir, "yaml_tag_edit.py"))
     zk_fzf_cfg = cfg.get("zk_fzf", {})
     py_zk = zk_fzf_cfg.get("py_zk", os.path.join(mybin_dir, "py_zk.py"))
     index_file = zk_fzf_cfg.get("index_file", os.path.join(notes_dir, "index.json"))
     valid_tags_cmd = f"{py_zk} list --mode=unique-tags -i {index_file}"
-    return notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, yaml_tag_edit_cmd, valid_tags_cmd
+    return notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, valid_tags_cmd
 
 def check_directories(notes_dir, working_mem_file):
     if not os.path.isdir(notes_dir):
@@ -194,7 +192,7 @@ def choose_title(note_content, llm_cmd, llm_instruct, editor):
         # Use bat if available for previewing the note content.
         preview_cmd = None
         if which("bat"):
-            # Note: Since note_content is not in a file, we create a temp file for preview only.
+            # Since note_content is not in a file, we create a temp file for preview only.
             temp_prev = tempfile.NamedTemporaryFile(mode="w+", suffix=".md", prefix="preview_", delete=False, encoding="utf-8")
             temp_prev.write(note_content)
             temp_prev.flush()
@@ -283,36 +281,116 @@ def select_tags(valid_tags_cmd):
         print(f"{YELLOW}Warning:{NC} No valid tags")
     return tags
 
-def write_note_file(filepath, title, content):
-    now_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    datetime_iso = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    frontmatter = (
-        f"---\n"
-        f"title: {title}\n"
-        f"date: {now_date}\n"
-        f"dateTime: {datetime_iso}\n"
-        f"dateModified: {datetime_iso}\n"
-        f"tags: []\n"
-        f"zettelid: {filepath.stem}\n"
-        f"---\n\n"
-        f"# {title}\n\n"
-    )
+def write_note_file(filepath, title, note_content):
+    """
+    Writes the note to the given filepath.
+    If the file exists and contains YAML frontmatter,
+    the existing metadata is merged with the new metadata and the old YAML block is removed.
+    The field 'dateCreated' is preserved if already present.
+    Other fields (like title, dateModified and zettelid) are updated.
+    """
+    now = datetime.datetime.now()
+    datetime_iso = now.strftime("%Y-%m-%dT%H:%M:%S")
+    filepath = pathlib.Path(filepath)
+    old_yaml = {}
+    body = note_content
+
+    if filepath.exists():
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            # If the content starts with a YAML block, remove it.
+            if content.startswith("---\n"):
+                # Find the end of the YAML block.
+                second_delim = content.find("\n---", 3)
+                if second_delim != -1:
+                    yaml_block = content[4:second_delim].strip()
+                    try:
+                        old_yaml = yaml.safe_load(yaml_block) or {}
+                    except yaml.YAMLError as e:
+                        eprint(f"{YELLOW}Warning:{NC} Could not parse existing YAML in '{filepath}'. {e}")
+                    # Remove the YAML block from the body.
+                    body = content[second_delim + 5:].lstrip()
+        except Exception as e:
+            eprint(f"{RED}Error:{NC} Failed to read existing note file '{filepath}'. {e}")
+
+    # Determine dateCreated: preserve if present; otherwise use file birth/creation time.
+    if "dateCreated" in old_yaml:
+        date_created_iso = old_yaml["dateCreated"]
+    else:
+        try:
+            creation_timestamp = os.path.getbirthtime(str(filepath))
+        except AttributeError:
+            creation_timestamp = os.path.getctime(str(filepath))
+            print(f"{YELLOW}Warning:{NC} `os.path.getbirthtime` not available. Falling back to `os.path.getctime` for dateCreated.")
+        date_created_iso = datetime.datetime.fromtimestamp(creation_timestamp).strftime("%Y-%m-%dT%H:%M:%S")
+    # Merge metadata.
+    merged_yaml = old_yaml.copy()  # preserve any preexisting fields
+    merged_yaml.update({
+        "title": title,
+        "dateCreated": date_created_iso,
+        "dateModified": datetime_iso,
+        "tags": old_yaml.get("tags", []),  # tags will be updated later via add_tags_to_note if needed
+        "zettelid": filepath.stem,
+    })
+    updated_yaml_str = yaml.dump(merged_yaml, indent=2, sort_keys=False)
+    frontmatter = f"---\n{updated_yaml_str}---\n\n# {title}\n\n"
+    # Write the new file with merged YAML frontmatter and the note's body (with previous YAML removed).
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(frontmatter)
-            f.write(content)
+            f.write(body)
     except Exception as e:
         eprint(f"{RED}Error:{NC} Failed to write note file '{filepath}'. {e}")
         sys.exit(1)
 
-def add_tags_to_note(filepath, tags, yaml_tag_edit_cmd):
-    for tag in tags:
-        try:
-            ret = subprocess.run([yaml_tag_edit_cmd, "add", tag, str(filepath)])
-            if ret.returncode != 0:
-                print(f"{RED}Error:{NC} Failed to add tag '{CYAN}{tag}{NC}' using '{yaml_tag_edit_cmd}'.", file=sys.stderr)
-        except Exception as e:
-            eprint(f"{RED}Error:{NC} Failed to run '{yaml_tag_edit_cmd}' for tag '{tag}': {e}")
+def update_yaml_tags(filepath, tags_to_add):
+    """Adds tags to the YAML frontmatter of a markdown file."""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        yaml_marker = "---\n"
+        yaml_start_index = content.find(yaml_marker)
+        yaml_end_index = -1
+
+        if yaml_start_index == 0:
+            yaml_end_index = content.find(yaml_marker, len(yaml_marker))
+            if yaml_end_index != -1:
+                yaml_str = content[len(yaml_marker):yaml_end_index]
+                try:
+                    yaml_data = yaml.safe_load(yaml_str) or {}
+                except yaml.YAMLError as e:
+                    eprint(f"{YELLOW}Warning:{NC} Could not parse existing YAML in '{filepath}'. {e}")
+                    yaml_data = {}
+            else:
+                yaml_data = {}
+        else:
+            yaml_data = {}
+
+        current_tags = yaml_data.get('tags', [])
+        if not isinstance(current_tags, list):
+            current_tags = []  # ensure we deal with a list
+
+        updated_tags = list(set(current_tags + tags_to_add))
+        yaml_data['tags'] = updated_tags
+
+        updated_yaml_str = yaml.dump(yaml_data, indent=2, sort_keys=False)
+
+        if yaml_start_index == 0 and yaml_end_index != -1:
+            new_content = yaml_marker + updated_yaml_str + yaml_marker + content[yaml_end_index + len(yaml_marker):]
+        else:
+            new_frontmatter = yaml_marker + updated_yaml_str + yaml_marker + "\n"
+            new_content = new_frontmatter + content
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+    except Exception as e:
+        eprint(f"{RED}Error:{NC} Failed to update tags in note file '{filepath}'. {e}")
+
+def add_tags_to_note(filepath, tags):
+    update_yaml_tags(filepath, tags)
 
 def append_working_mem_link(working_mem_file, zettelid_base, title):
     link_text = f"- [[{zettelid_base}|{title}]]\n"
@@ -355,7 +433,7 @@ def main():
     use_nvim = args.nvim
     journal_mode = False
 
-    notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, yaml_tag_edit_cmd, valid_tags_cmd = get_config()
+    notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, valid_tags_cmd = get_config()
     check_directories(notes_dir, working_mem_file)
 
     if use_nvim:
@@ -419,7 +497,7 @@ def main():
         filename = f"{date_prefix}{random_suffix}.md"
         note_path = pathlib.Path(notes_dir) / filename
 
-    # Write the note file with the new YAML frontmatter.
+    # Write the note file with the new (merged) YAML frontmatter.
     write_note_file(note_path, title, note_content)
     print(f"{GREEN}Note created/updated successfully: '{CYAN}{note_path}{GREEN}'.{NC}")
 
@@ -427,14 +505,13 @@ def main():
         os.unlink(temp_file_path)
 
     if selected_tags:
-        add_tags_to_note(note_path, selected_tags, yaml_tag_edit_cmd)
+        add_tags_to_note(note_path, selected_tags)
     if scratch_mode_flag:
-        add_tags_to_note(note_path, ["scratch"], yaml_tag_edit_cmd)
+        add_tags_to_note(note_path, ["scratch"])
     if journal_mode:
-        add_tags_to_note(note_path, ["journal"], yaml_tag_edit_cmd)
+        add_tags_to_note(note_path, ["journal"])
 
     # Append a wikilink to the working memory file.
-    # Here we use the note file's stem as zettelid.
     append_working_mem_link(working_mem_file, note_path.stem, title)
     print(f"{GREEN}Link appended to working memory file.{NC}")
     print(f"{GREEN}Done.{NC}")
