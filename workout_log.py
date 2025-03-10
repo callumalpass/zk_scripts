@@ -7,6 +7,10 @@ manage workout templates, view & filter history, view aggregated statistics,
 delete sessions, backup data, and export data in CSV and JSON.
 It auto-creates directories/files if needed and provides an advanced curses-based UI.
 
+It uses an external index (index.json) produced by zk_index.py for reading information.
+New workouts, exercises, and templates are written as markdown files.
+The index file is never written to by this script.
+    
 Usage:
     $ export NOTES_DIR=/path/to/notes
     $ ./workout_log.py [--verbose] [--export-history] [--export-json]
@@ -22,13 +26,13 @@ import json
 import logging
 import os
 import random
-import shutil
 import string
 import sys
+import shutil
+import yaml
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import yaml
 from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 
@@ -94,12 +98,12 @@ def draw_box(win: Any, title: str = "") -> None:
 class DataManager:
     """
     Handles file operations for exercises, sessions, and templates.
-    Auto-creates the notes directory and index file if needed.
-    Also supports exporting history, generating statistics, and data backup.
+    Reads data from an external index (index.json) for fast access.
+    New notes are written to markdown files as before.
     """
     def __init__(self, notes_dir: Path, index_file: Path, log_file: Path):
         self.notes_dir = notes_dir
-        self.index_file = index_file
+        self.index_file = index_file  # This is produced externally (do not write to it)
         self.log_file = log_file
         self._exercise_cache: Optional[List[Exercise]] = None
         self._session_cache: Optional[List[WorkoutSession]] = None
@@ -109,13 +113,12 @@ class DataManager:
         self.logger.debug("DataManager initialized with notes directory: %s", self.notes_dir)
 
     def _ensure_files_exist(self) -> None:
-        """Ensure that the notes directory and index file exist."""
+        """Ensure that the notes directory exists.
+        Do not create or modify the index file—it is managed externally."""
         if not self.notes_dir.exists():
             self.notes_dir.mkdir(parents=True, exist_ok=True)
             self.logger.info("Created notes directory: %s", self.notes_dir)
-        if not self.index_file.exists():
-            self.index_file.write_text("[]", encoding="utf-8")
-            self.logger.info("Created index file: %s", self.index_file)
+        # Do not create the index file if missing.
 
     def read_file(self, filepath: Path) -> (Dict[str, Any], str):
         """Read a markdown file with YAML frontmatter and return its frontmatter and body."""
@@ -160,18 +163,10 @@ class DataManager:
         self.write_file(filepath, fm, body)
         self.logger.debug("Updated modified date for: %s", filepath)
 
-    def is_planned(self, filepath: Path) -> bool:
-        """Determine if an exercise is marked as planned."""
-        fm, _ = self.read_file(filepath)
-        val = fm.get("planned_exercise", False)
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.lower() == "true"
-        return False
-
+    # --- Writing operations (do not update the external index) ---
     def create_exercise(self, title: str, equipment: str) -> str:
-        """Create a new exercise file and update the index."""
+        """Create a new exercise file.
+        Note: This writes a new markdown file; the external index is not updated here."""
         uid = generate_unique_id()
         filename = f"{uid}.md"
         filepath = self.notes_dir / filename
@@ -189,29 +184,20 @@ class DataManager:
         }
         self.write_file(filepath, frontmatter)
         self._exercise_cache = None  # Invalidate cache
-        self._update_index(filename, title, equipment_list)
         self.logger.info("Created new exercise: %s", filename)
         return filename
 
-    def _update_index(self, filename: str, title: str, equipment: List[str]) -> None:
-        """Add a new exercise to the index file."""
-        try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-        except Exception as err:
-            self.logger.error("Error reading index file: %s", err)
-            data = []
-        entry = {
-            "filename": filename.replace(".md", ""),
-            "title": title,
-            "tags": ["exercise"],
-            "exercise_equipment": equipment,
-        }
-        data.append(entry)
-        try:
-            self.index_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            self.logger.debug("Index updated with exercise: %s", filename)
-        except Exception as err:
-            self.logger.error("Error updating index file: %s", err)
+    def append_to_workout_session(self, session_filename: str, new_exercises: List[Dict[str, Any]]) -> None:
+        """Append new exercises to an existing workout session note."""
+        filepath = self.notes_dir / session_filename
+        fm, body = self.read_file(filepath)
+        if "exercises" not in fm or not isinstance(fm["exercises"], list):
+            fm["exercises"] = []
+        fm["exercises"].extend(new_exercises)
+        fm["dateModified"] = get_current_iso(with_seconds=False)
+        self.write_file(filepath, fm, body)
+        self._session_cache = None
+        self.logger.info("Appended %d exercise(s) to session %s", len(new_exercises), session_filename)
 
     def toggle_exercise_planned(self, filename: str) -> bool:
         """Toggle the planned status of an exercise."""
@@ -226,10 +212,11 @@ class DataManager:
         self.write_file(filepath, fm, body)
         self._exercise_cache = None
         self.logger.info("Toggled planned status for %s to %s", filename, new_status)
-        return self.is_planned(filepath)
+        return new_status
 
     def edit_exercise(self, filename: str, new_title: str, new_equipment: str) -> None:
-        """Edit an existing exercise note."""
+        """Edit an existing exercise note.
+        Note: Does not update the external index."""
         if not filename.endswith(".md"):
             filename += ".md"
         filepath = self.notes_dir / filename
@@ -241,20 +228,10 @@ class DataManager:
         self.write_file(filepath, fm, body)
         self._exercise_cache = None
         self.logger.info("Edited exercise: %s", filename)
-        # Update the index file
-        try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-            for entry in data:
-                if entry.get("filename") == filename.replace(".md", ""):
-                    entry["title"] = new_title
-                    entry["exercise_equipment"] = new_equipment_list
-                    break
-            self.index_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception as err:
-            self.logger.error("Error updating index for exercise %s: %s", filename, err)
 
     def delete_exercise(self, filename: str) -> None:
-        """Delete an exercise note and remove it from the index."""
+        """Delete an exercise note.
+        Note: Does not update the external index."""
         if not filename.endswith(".md"):
             filename += ".md"
         filepath = self.notes_dir / filename
@@ -264,42 +241,6 @@ class DataManager:
         except Exception as err:
             self.logger.error("Error deleting exercise %s: %s", filename, err)
         self._exercise_cache = None
-        try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-            data = [entry for entry in data if entry.get("filename") != filename.replace(".md", "")]
-            self.index_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            self.logger.debug("Updated index after deleting exercise: %s", filename)
-        except Exception as err:
-            self.logger.error("Error updating index after deleting exercise %s: %s", filename, err)
-
-    def load_exercises(self) -> List[Exercise]:
-        """Load and return all exercises from the index file."""
-        if self._exercise_cache is not None:
-            return self._exercise_cache
-        exercises = []
-        try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-            for note in data:
-                if "exercise" in (note.get("tags") or []):
-                    filename = note.get("filename")
-                    filepath = self.notes_dir / (filename + ".md")
-                    planned = self.is_planned(filepath) if filepath.exists() else False
-                    exercises.append(Exercise(
-                        filename=filename,
-                        title=note.get("title", filename),
-                        planned=planned,
-                        equipment=note.get("exercise_equipment", ["none"])
-                    ))
-            self._exercise_cache = exercises
-            self.logger.debug("Loaded %d exercises", len(exercises))
-        except Exception as err:
-            self.logger.error("Error loading exercise index: %s", err)
-        return exercises
-
-    def search_exercises(self, keyword: str) -> List[Exercise]:
-        """Return a list of exercises whose title contains the keyword (case-insensitive)."""
-        keyword_lower = keyword.lower()
-        return [ex for ex in self.load_exercises() if keyword_lower in ex.title.lower()]
 
     def save_workout_session(self, exercises: List[Dict[str, Any]]) -> str:
         """Save a workout session note with recorded exercises."""
@@ -321,44 +262,6 @@ class DataManager:
         self._session_cache = None
         self.logger.info("Saved workout session: %s", filename)
         return filename
-
-    def list_workout_sessions(self) -> List[WorkoutSession]:
-        """Return a list of all workout sessions."""
-        sessions = []
-        for md_file in self.notes_dir.glob("*.md"):
-            fm, _ = self.read_file(md_file)
-            if not fm or "workout" not in (fm.get("tags") or []):
-                continue
-            session_exercises = []
-            for ex in fm.get("exercises", []):
-                sets = ex.get("sets", [])
-                workout_sets = []
-                for s in sets:
-                    try:
-                        workout_sets.append(WorkoutSet(reps=int(s.get("reps", 0)), weight=float(s.get("weight", 0))))
-                    except Exception:
-                        continue
-                session_exercises.append(WorkoutExercise(id=ex.get("id"), title="", sets=workout_sets))
-            sessions.append(WorkoutSession(
-                filename=md_file.name,
-                date=fm.get("date", "unknown"),
-                title=fm.get("title", md_file.stem),
-                exercises=session_exercises
-            ))
-        sessions.sort(key=lambda s: s.date, reverse=True)
-        self._session_cache = sessions
-        self.logger.debug("Found %d workout sessions", len(sessions))
-        return sessions
-
-    def delete_workout_session(self, filename: str) -> None:
-        """Delete a workout session note."""
-        filepath = self.notes_dir / filename
-        try:
-            filepath.unlink()
-            self.logger.info("Deleted workout session: %s", filename)
-        except Exception as err:
-            self.logger.error("Error deleting session %s: %s", filename, err)
-        self._session_cache = None
 
     def create_workout_template(self, name: str, description: str, exercises: List[Exercise]) -> str:
         """Create a new workout template note and return its filename."""
@@ -382,26 +285,9 @@ class DataManager:
         self.logger.info("Created workout template: %s", filename)
         return filename
 
-    def load_templates(self) -> List[WorkoutTemplate]:
-        """Load and return all workout templates."""
-        templates = []
-        for md_file in self.notes_dir.glob("*.md"):
-            fm, _ = self.read_file(md_file)
-            if not fm or "workout_template" not in (fm.get("tags") or []):
-                continue
-            exercises = [item.get("exercise_filename") for item in fm.get("exercises", [])]
-            templates.append(WorkoutTemplate(
-                filename=md_file.name,
-                title=fm.get("title", md_file.stem),
-                description=fm.get("description", ""),
-                exercises=exercises
-            ))
-        self._template_cache = templates
-        self.logger.debug("Loaded %d workout templates", len(templates))
-        return templates
-
     def update_template(self, tmpl_filename: str, name: str, description: str, exercises: List[Exercise]) -> None:
-        """Update an existing workout template."""
+        """Update an existing workout template.
+        Note: Does not update the external index."""
         filepath = self.notes_dir / tmpl_filename
         if not filepath.exists():
             self.logger.error("Template %s not found", tmpl_filename)
@@ -525,6 +411,94 @@ class DataManager:
             self.logger.exception("Failed to create backup: %s", err)
         return backup_file
 
+    def load_exercises(self) -> List[Exercise]:
+        """Load and return all exercises from the external index (index.json)."""
+        if self._exercise_cache is not None:
+            return self._exercise_cache
+        try:
+            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+        except Exception as err:
+            self.logger.error("Error reading index file: %s", err)
+            data = []
+        exercises = []
+        for note in data:
+            meta = note.get("extra", note)
+            tags = meta.get("tags") or []  # Ensure tags is always a list.
+            if "exercise" in tags:
+                filename = note.get("filename")
+                title = meta.get("title", filename)
+                planned = meta.get("planned_exercise", False)
+                equipment = meta.get("exercise_equipment", ["none"])
+                exercises.append(Exercise(
+                    filename=filename,
+                    title=title,
+                    planned=planned,
+                    equipment=equipment
+                ))
+        self._exercise_cache = exercises
+        self.logger.debug("Loaded %d exercises from index", len(exercises))
+        return exercises
+
+    def list_workout_sessions(self) -> List[WorkoutSession]:
+        """Return a list of all workout sessions from the external index."""
+        if self._session_cache is not None:
+            return self._session_cache
+        try:
+            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+        except Exception as err:
+            self.logger.error("Error reading index file: %s", err)
+            data = []
+        sessions = []
+        for note in data:
+            meta = note.get("extra", note)
+            tags = meta.get("tags") or []  # Ensure tags is always iterable.
+            if "workout" in tags:
+                filename = note.get("filename")
+                date_val = meta.get("date", "unknown")
+                title = meta.get("title", filename)
+                exercises_data = meta.get("exercises", [])
+                session_exercises = []
+                for ex in exercises_data:
+                    sets = ex.get("sets", [])
+                    workout_sets = []
+                    for s in sets:
+                        try:
+                            workout_sets.append(WorkoutSet(reps=int(s.get("reps", 0)), weight=float(s.get("weight", 0))))
+                        except Exception:
+                            continue
+                    session_exercises.append(WorkoutExercise(id=ex.get("id"), title="", sets=workout_sets))
+                sessions.append(WorkoutSession(filename=filename, date=date_val, title=title, exercises=session_exercises))
+        sessions.sort(key=lambda s: s.date, reverse=True)
+        self._session_cache = sessions
+        self.logger.debug("Found %d workout sessions in index", len(sessions))
+        return sessions
+
+    def load_templates(self) -> List[WorkoutTemplate]:
+        """Load and return all workout templates from the external index."""
+        if self._template_cache is not None:
+            return self._template_cache
+        try:
+            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+        except Exception as err:
+            self.logger.error("Error reading index file: %s", err)
+            data = []
+        templates = []
+        for note in data:
+            meta = note.get("extra", note)
+            tags = meta.get("tags") or []  # Ensure tags is a list.
+            if "workout_template" in tags:
+                filename = note.get("filename")
+                title = meta.get("title", filename)
+                description = meta.get("description", "")
+                exercises_field = meta.get("exercises", [])
+                exercise_filenames = [item.get("exercise_filename") for item in exercises_field if item.get("exercise_filename")]
+                templates.append(WorkoutTemplate(filename=filename, title=title, description=description, exercises=exercise_filenames))
+        self._template_cache = templates
+        self.logger.debug("Loaded %d workout templates from index", len(templates))
+        return templates
+
+
+
 # --- UI Manager ---
 class UIManager:
     """
@@ -576,6 +550,47 @@ class UIManager:
         self.stdscr.clear()
         self.stdscr.bkgd(" ", curses.color_pair(4))
         self.stdscr.refresh()
+
+    def add_to_recent_workout(self) -> None:
+        """Allow the user to add an exercise to the most recent workout session."""
+        sessions = self.dm.list_workout_sessions()
+        if not sessions:
+            self.show_footer("No recent workout found.", 3)
+            self.pause("Press any key to return to main menu...")
+            return
+
+        # Assume the first session is the most recent.
+        recent_session = sessions[0]
+
+        # Convert session exercises into a list of dicts for display.
+        session_exercises = [
+            {
+                "id": we.id,
+                "title": we.title,
+                "sets": [{"reps": s.reps, "weight": s.weight} for s in we.sets]
+            }
+            for we in recent_session.exercises
+        ]
+
+        self.clear_screen()
+        self.draw_header(f"Resume Workout: {recent_session.title}")
+        self.show_footer("Select an exercise to add to your workout", 3)
+
+        ex = self.choose_exercise(session_exercises)
+        if not ex:
+            self.show_footer("No exercise selected.", 3)
+            self.pause("Press any key to return to main menu...")
+            return
+
+        result = self.record_exercise(ex)
+        if not result:
+            self.show_footer("No exercise recorded.", 3)
+            self.pause("Press any key to return to main menu...")
+            return
+
+        self.dm.append_to_workout_session(recent_session.filename, [result])
+        self.show_footer(f"Exercise added to session '{recent_session.title}'.", 3)
+        self.pause("Press any key to return to main menu...")
 
     def prompt_input(self, prompt: str, y: int, x: int, default: str = "") -> str:
         self.stdscr.addstr(y, x, prompt)
@@ -670,104 +685,161 @@ class UIManager:
         self.dm.logger.info("Session recorded with %d exercises", len(session_exercises))
 
     def build_history_index(self) -> dict:
-        """
-        Build and return a history index mapping each exercise id to a list of tuples,
-        where each tuple is (session date, sets), sorted by date (most recent first).
-        """
-        all_sessions = self.dm.list_workout_sessions()  # uses cache if available
+        """Build and return a history index mapping exercise id to a list of tuples (session date, sets)."""
+        all_sessions = self.dm.list_workout_sessions()
         history_index = {}
         for session in all_sessions:
             for ex in session.exercises:
                 history_index.setdefault(ex.id, []).append((session.date, ex.sets))
-        # Sort each exercise's history by date in descending order
         for ex_id in history_index:
             history_index[ex_id].sort(key=lambda item: item[0], reverse=True)
         return history_index
 
+    def show_exercise_history_popup(self, exercise: Exercise) -> None:
+        if not hasattr(self, "history_index") or self.history_index is None:
+            self.history_index = self.build_history_index()
+        details = self.history_index.get(exercise.filename, [])
+        max_y, max_x = self.stdscr.getmaxyx()
+        popup_h = min(20, max_y - 4)
+        popup_w = min(60, max_x - 4)
+        begin_y = (max_y - popup_h) // 2
+        begin_x = (max_x - popup_w) // 2
+        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        draw_box(win, f" History for '{exercise.title}' ")
+        if not details:
+            win.addstr(2, 2, "No session history available.")
+        else:
+            row = 2
+            for (sess_date, sets) in details:
+                sets_summary = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
+                line = f"{sess_date}: {sets_summary}"
+                win.addnstr(row, 2, line, popup_w - 4)
+                row += 1
+                if row >= popup_h - 2:
+                    break
+        win.addstr(popup_h - 2, 2, "Press any key to close...")
+        win.refresh()
+        win.getch()
+        del win
+        self.clear_screen()
+        self.draw_header("Select an Exercise (or / to search)")
+
+    def show_session_summary_popup(self, session_exercises: List[Dict[str, Any]]) -> None:
+        max_y, max_x = self.stdscr.getmaxyx()
+        popup_h = min(20, max_y - 4)
+        popup_w = min(70, max_x - 4)
+        begin_y = (max_y - popup_h) // 2
+        begin_x = (max_x - popup_w) // 2
+        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        draw_box(win, " Session Summary ")
+        if not session_exercises:
+            win.addstr(2, 2, "No exercises recorded yet.")
+        else:
+            row = 2
+            for ex in session_exercises:
+                title = ex.get("title", "Unknown")
+                sets = ex.get("sets", [])
+                line = f"{title} - {len(sets)} set(s)"
+                win.addnstr(row, 2, line, popup_w - 4)
+                row += 1
+                for idx, s in enumerate(sets, start=1):
+                    detail = f"  Set {idx}: {s.get('reps', '')} reps @ {s.get('weight', '')}"
+                    if row < popup_h - 2:
+                        win.addnstr(row, 4, detail, popup_w - 6)
+                        row += 1
+                    else:
+                        break
+                if row < popup_h - 2:
+                    row += 1
+                else:
+                    break
+        win.addnstr(popup_h - 2, 2, "Press any key to close...", popup_w - 4)
+        win.refresh()
+        win.getch()
+        self.clear_screen()
+        self.draw_header("Select an Exercise (or / to search)")
+
     def choose_exercise(self, session_exercises: List[Dict[str, Any]], exercises: Optional[List[Exercise]] = None) -> Optional[Exercise]:
         if exercises is None:
             exercises = self.dm.load_exercises()
-
-        # Cache the history index if not already cached
         if not hasattr(self, "history_index") or self.history_index is None:
             self.history_index = self.build_history_index()
-
         cursor = 0
+        offset = 0
         while True:
             max_y, max_x = self.stdscr.getmaxyx()
-            list_h = max_y - 12
+            list_h = max_y - 20
             self.clear_screen()
             self.draw_header("Select an Exercise (or / to search)")
             header_text = f"{'Title':<{max_x-35}} {'Status':<10} Equipment"
             self.stdscr.attron(curses.A_BOLD | curses.color_pair(3))
             self.stdscr.addstr(2, 2, header_text[:max_x-4])
             self.stdscr.attroff(curses.A_BOLD | curses.color_pair(3))
-            for idx, ex in enumerate(exercises[:list_h-4]):
+            visible_exercises = exercises[offset:offset + (list_h - 4)]
+            for idx, ex in enumerate(visible_exercises):
+                actual_idx = offset + idx
                 status = "Planned" if ex.planned else ""
                 equip = ", ".join(ex.equipment) if isinstance(ex.equipment, list) else str(ex.equipment or "")
                 line = f"{ex.title:<{max_x-35}} {status:<10} {equip}"
-                if idx == cursor:
+                row = 3 + idx
+                if actual_idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
-                    self.stdscr.addstr(3+idx, 2, line[:max_x-4])
+                    self.stdscr.addstr(row, 2, line[:max_x-4])
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
-                    self.stdscr.addstr(3+idx, 2, line[:max_x-4])
-            key_hint = "↑/↓: Move | Enter: Select | P: Toggle Planned | S: Search | Q: Cancel"
+                    self.stdscr.addstr(row, 2, line[:max_x-4])
+            key_hint = ("↑/↓: Move | Enter: Select | P: Toggle Planned | " +
+                        "S: Search | D: Session Summary | H: Exercise History | Q: Cancel")
             self.show_footer(key_hint, 3)
             self.stdscr.refresh()
-
-            # Use an increased preview window height and reserve some lines for session summary.
-            preview_h = 18              # overall preview window height
-            summary_block_height = 8     # fixed number of lines for session summary
+            preview_h = 18
             preview_win = curses.newwin(preview_h, max_x-2, max_y - preview_h - 2, 1)
             draw_box(preview_win, " Preview ")
-            if exercises:
-                selected = exercises[cursor]
-                preview_win.addstr(1, 2, f"Title: {selected.title}")
-                equip = ", ".join(selected.equipment) if isinstance(selected.equipment, list) else str(selected.equipment or "")
-                preview_win.addstr(2, 2, f"Equipment: {equip}")
-                status = "Planned" if selected.planned else "Not Planned"
-                preview_win.addstr(3, 2, f"Status: {status}")
-                preview_win.addstr(4, 2, "Recent History:")
-
-                # Calculate how many lines can be used for recent history.
-                # Header occupies lines 1-4; reserve summary_block_height lines at bottom.
-                recent_history_max_lines = preview_h - summary_block_height - 4
-                line_idx = 5
-                recent_sessions = self.history_index.get(selected.filename, [])
-                if recent_sessions:
-                    for date, sets in recent_sessions[:3]:
-                        if (line_idx - 5) < recent_history_max_lines:
-                            set_str = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
-                            preview_win.addstr(line_idx, 2, f"{date}: {set_str}"[:max_x-4])
-                            line_idx += 1
-                        else:
-                            break
-                else:
-                    preview_win.addstr(line_idx, 2, "No past sessions.")
-
-                # Draw divider and session summary block.
-                divider_line = preview_h - summary_block_height
-                preview_win.addstr(divider_line, 2, "-" * (max_x - 6))
-                summary_title_line = divider_line + 1
-                preview_win.addstr(summary_title_line, 2, "Session Summary:")
-                summary_line = summary_title_line + 1
-                if session_exercises:
-                    for ex in session_exercises:
-                        if summary_line < preview_h - 1:
-                            preview_win.addstr(summary_line, 4, f"• {ex.get('title','')} - {len(ex.get('sets', []))} set(s)")
-                            summary_line += 1
-                else:
-                    preview_win.addstr(summary_line, 4, "(none)")
+            selected = exercises[cursor]
+            preview_win.addstr(1, 2, f"Title: {selected.title}")
+            equip = ", ".join(selected.equipment) if isinstance(selected.equipment, list) else str(selected.equipment or "")
+            preview_win.addstr(2, 2, f"Equipment: {equip}")
+            status = "Planned" if selected.planned else "Not Planned"
+            preview_win.addstr(3, 2, f"Status: {status}")
+            preview_win.addstr(4, 2, "Recent History:")
+            recent_history_max_lines = preview_h - 8
+            line_idx = 5
+            recent_sessions = self.history_index.get(selected.filename, [])
+            if recent_sessions:
+                for date, sets in recent_sessions[:3]:
+                    if (line_idx - 5) < recent_history_max_lines:
+                        set_str = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
+                        preview_win.addstr(line_idx, 2, f"{date}: {set_str}"[:max_x-4])
+                        line_idx += 1
+                    else:
+                        break
+            else:
+                preview_win.addstr(line_idx, 2, "No past sessions.")
+            divider_line = preview_h - 8
+            preview_win.addstr(divider_line, 2, "-" * (max_x - 6))
+            summary_title_line = divider_line + 1
+            preview_win.addstr(summary_title_line, 2, "Current Session Summary:")
+            summary_line = summary_title_line + 1
+            if session_exercises:
+                for recorded_ex in session_exercises:
+                    if summary_line < preview_h - 1:
+                        preview_win.addstr(summary_line, 4,
+                                            f"• {recorded_ex.get('title','')} - {len(recorded_ex.get('sets', []))} set(s)")
+                        summary_line += 1
+            else:
+                preview_win.addstr(summary_line, 4, "(none)")
             preview_win.refresh()
-
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')):
                 if cursor > 0:
                     cursor -= 1
+                    if cursor < offset:
+                        offset = cursor
             elif k in (curses.KEY_DOWN, ord('j')):
                 if cursor < len(exercises) - 1:
                     cursor += 1
+                    if cursor >= offset + (list_h - 4):
+                        offset += 1
             elif k in (10, 13):
                 self.dm.logger.debug("Exercise selected: %s", exercises[cursor].title)
                 return exercises[cursor]
@@ -785,10 +857,13 @@ class UIManager:
                 if keyword:
                     exercises = self.dm.search_exercises(keyword)
                     cursor = 0
+                    offset = 0
+            elif k in (ord('d'), ord('D')):
+                self.show_session_summary_popup(session_exercises)
+            elif k in (ord('h'), ord('H')):
+                self.show_exercise_history_popup(exercises[cursor])
             elif k in (ord('q'), ord('Q')):
                 return None
-
-
 
     def list_templates(self) -> Optional[WorkoutTemplate]:
         templates = self.dm.load_templates()
@@ -1057,13 +1132,7 @@ class UIManager:
             elif k in (ord('q'), ord('Q')):
                 break
 
-    # --- Improved History Viewing: Detailed Session Breakdown ---
     def show_session_details(self, session: WorkoutSession) -> None:
-        """
-        Displays detailed information about a workout session.
-        For each exercise, it shows the number of sets, details for each set (reps and weight),
-        and computes totals and averages.
-        """
         self.clear_screen()
         self.draw_header(f"Session Details: {session.title}")
         max_y, max_x = self.stdscr.getmaxyx()
@@ -1073,13 +1142,11 @@ class UIManager:
         details_win.addstr(2, 2, f"Title: {session.title}")
         details_win.addstr(4, 2, "Exercises:")
         line = 5
-        # Lookup all exercises to match IDs with titles
         all_exercises = self.dm.load_exercises()
         for ex in session.exercises:
             ex_title = next((e.title for e in all_exercises if e.filename == ex.id), ex.id)
             details_win.addstr(line, 4, f"- {ex_title} ({len(ex.sets)} set(s))")
             line += 1
-            # Display each set's details
             for idx, s in enumerate(ex.sets, start=1):
                 details_win.addstr(line, 6, f"Set {idx}: Reps: {s.reps}, Weight: {s.weight}")
                 line += 1
@@ -1087,7 +1154,7 @@ class UIManager:
             total_weight = sum(s.weight for s in ex.sets)
             avg_weight = total_weight / len(ex.sets) if ex.sets else 0
             details_win.addstr(line, 6, f"Totals: {total_reps} reps, Total Weight: {total_weight:.1f}, Avg Weight: {avg_weight:.1f}")
-            line += 2  # Extra space between exercises
+            line += 2
             if line > max_y - 3:
                 details_win.addstr(max_y - 3, 2, "-- More details available, resize window for full view --")
                 break
@@ -1229,6 +1296,7 @@ class UIManager:
     def main_menu(self) -> None:
         menu_options = [
             ("Record a Workout Session", self.record_session),
+            ("Add to Most Recent Workout", self.add_to_recent_workout),  # New option
             ("View Workout History", self.view_history),
             ("Delete a Workout Session", self.delete_session_ui),
             ("Create a New Exercise", self.add_new_exercise),
@@ -1250,7 +1318,7 @@ class UIManager:
             self.clear_screen()
             self.draw_header("Ultimate Workout Logger – Main Menu")
             for idx, (option, _) in enumerate(menu_options):
-                y = 3 + idx * 2
+                y = 3 + idx 
                 if idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
                     self.stdscr.addstr(y, 4, f"> {option}")
@@ -1293,7 +1361,7 @@ def main(stdscr: Any) -> None:
         print("Error: Please set the NOTES_DIR environment variable or use the --notes-dir option.")
         sys.exit(1)
     NOTES_DIR = Path(notes_dir_path)
-    INDEX_FILE = NOTES_DIR / "index.json"
+    INDEX_FILE = NOTES_DIR / "index.json"  # This file is produced by zk_index.py
     LOG_FILE_PATH = NOTES_DIR / "workout_log_error.log"
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
