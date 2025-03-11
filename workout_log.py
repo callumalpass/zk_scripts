@@ -358,7 +358,10 @@ class DataManager:
     def update_template(self, tmpl_filename: str, name: str, description: str, exercises: List[Exercise]) -> None:
         """Update an existing workout template.
         Note: Does not update the external index."""
+
         filepath = self.notes_dir / tmpl_filename
+        if not filepath.endswith(".md"):
+            filepath += ".md"
         if not filepath.exists():
             self.logger.error("Template %s not found", tmpl_filename)
             return
