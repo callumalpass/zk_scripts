@@ -911,6 +911,9 @@ class UIManager:
             exercises = self.dm.load_exercises()
         if not self.history_index:
             self.history_index = self.build_history_index()
+        # Sort exercises by the total number of recorded sets (descending order)
+        exercises.sort(key=lambda ex: sum(len(sets) for (_, sets) in self.history_index.get(ex.filename, [])), reverse=True)
+        
         cursor = 0
         offset = 0
         while True:
@@ -940,7 +943,7 @@ class UIManager:
             self.show_footer(key_hint, 3)
             self.stdscr.refresh()
             preview_h = 18
-                        # Create the preview window as before.
+            # Create the preview window as before.
             preview_win = curses.newwin(preview_h, max_x-2, max_y - preview_h - 2, 1)
             draw_box(preview_win, " Preview ")
             selected = exercises[cursor]
@@ -958,7 +961,6 @@ class UIManager:
             for sess_date, sets in history:
                 total_sets += len(sets)
                 for s in sets:
-                    # If s is a dictionary, use .get(), otherwise assume it's a WorkoutSet object.
                     if hasattr(s, "get"):
                         try:
                             reps = int(s.get("reps", 0))
@@ -973,18 +975,13 @@ class UIManager:
                         weight = s.weight
                     highest_reps = max(highest_reps, reps)
                     highest_weight = max(highest_weight, weight)
-
-# Display the computed all-time stats as before...
             preview_win.addstr(4, 2, f"All Time Sets: {total_sets}")
             preview_win.addstr(5, 2, f"Highest Reps: {highest_reps}")
             preview_win.addstr(6, 2, f"Highest Weight: {highest_weight}")
-
-# Updated recent history section:
             preview_win.addstr(7, 2, "Recent History:")
             recent_history_max_lines = preview_h - 10
             line_idx = 8
             if history:
-                # Only show up to 3 recent sessions
                 for date, sets in history[:3]:
                     if (line_idx - 8) < recent_history_max_lines:
                         set_str_items = []
@@ -1003,30 +1000,23 @@ class UIManager:
                         break
             else:
                 preview_win.addstr(line_idx, 2, "No past sessions.")
-
             divider_line = preview_h - 8
             preview_win.addstr(divider_line, 2, "-" * (max_x - 6))
             summary_title_line = divider_line + 1
             preview_win.addstr(summary_title_line, 2, "Current Session Summary:")
             preview_win.refresh()
-
             summary_line = summary_title_line + 1
-            # Inside choose_exercise, where we render the current session summary:
             if session_exercises:
                 for recorded_ex in session_exercises:
                     if summary_line < preview_h - 1:
-                        # Check if recorded_ex supports the .get method (i.e. is a dict)
                         if hasattr(recorded_ex, "get"):
                             rec_title = recorded_ex.get("title", "")
                             rec_sets = recorded_ex.get("sets", [])
                         else:
-                            # Otherwise, assume it's an Exercise instance
                             rec_title = recorded_ex.title
-                            rec_sets = []  # No recorded sets for a plain Exercise object
-                        preview_win.addstr(summary_line, 4,
-                                            f"• {rec_title} - {len(rec_sets)} set(s)")
+                            rec_sets = []
+                        preview_win.addstr(summary_line, 4, f"• {rec_title} - {len(rec_sets)} set(s)")
                         summary_line += 1
-
             else:
                 preview_win.addstr(summary_line, 4, "(none)")
             preview_win.refresh()
@@ -1054,6 +1044,8 @@ class UIManager:
                 keyword = self.prompt_input("Search keyword: ", 2, 2)
                 if keyword:
                     exercises = self.dm.search_exercises(keyword)
+                    # Re-sort the filtered list by total recorded sets
+                    exercises.sort(key=lambda ex: sum(len(sets) for (_, sets) in self.history_index.get(ex.filename, [])), reverse=True)
                     cursor = 0
                     offset = 0
             elif k in (ord('d'), ord('D')):
@@ -1064,6 +1056,7 @@ class UIManager:
                 self.show_help()
             elif k in (ord('q'), ord('Q')):
                 return None
+
 
     def list_templates(self) -> Optional[WorkoutTemplate]:
         templates = self.dm.load_templates()
