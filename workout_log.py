@@ -52,7 +52,7 @@ class WorkoutSet:
 @dataclass
 class WorkoutExercise:
     id: str
-    title: str
+    title: str  # Now we save the title so it can be displayed in session summaries.
     sets: List[WorkoutSet]
 
 @dataclass
@@ -94,6 +94,39 @@ def draw_box(win: Any, title: str = "") -> None:
         except Exception as err:
             logging.getLogger(__name__).exception("Error drawing box title: %s", err)
 
+# --- Modal & Flash Helpers ---
+def modal_confirm(stdscr: Any, message: str) -> bool:
+    """Display a centered modal asking the user to confirm (Y/N)."""
+    max_y, max_x = stdscr.getmaxyx()
+    modal_h, modal_w = 7, min(60, max_x - 4)
+    begin_y = (max_y - modal_h) // 2
+    begin_x = (max_x - modal_w) // 2
+    win = curses.newwin(modal_h, modal_w, begin_y, begin_x)
+    draw_box(win, " Confirmation ")
+    win.addstr(2, 2, message[:modal_w-4])
+    win.addstr(4, 2, "Press Y to confirm or N to cancel.")
+    win.refresh()
+    while True:
+        ch = stdscr.getch()
+        if ch in (ord('y'), ord('Y')):
+            return True
+        elif ch in (ord('n'), ord('N'), ord('q'), ord('Q')):
+            return False
+
+def flash_message(stdscr: Any, message: str, duration_ms: int = 1500) -> None:
+    """Display a centered flash message for a brief duration."""
+    max_y, max_x = stdscr.getmaxyx()
+    modal_h, modal_w = 5, min(50, max_x - 4)
+    begin_y = (max_y - modal_h) // 2
+    begin_x = (max_x - modal_w) // 2
+    win = curses.newwin(modal_h, modal_w, begin_y, begin_x)
+    draw_box(win, " Info ")
+    win.addstr(2, 2, message[:modal_w-4])
+    win.refresh()
+    curses.napms(duration_ms)
+    win.erase()
+    stdscr.refresh()
+
 # --- Data Manager ---
 class DataManager:
     """
@@ -118,7 +151,6 @@ class DataManager:
         if not self.notes_dir.exists():
             self.notes_dir.mkdir(parents=True, exist_ok=True)
             self.logger.info("Created notes directory: %s", self.notes_dir)
-        # Do not create the index file if missing.
 
     def read_file(self, filepath: Path) -> (Dict[str, Any], str):
         """Read a markdown file with YAML frontmatter and return its frontmatter and body."""
@@ -163,7 +195,7 @@ class DataManager:
         self.write_file(filepath, fm, body)
         self.logger.debug("Updated modified date for: %s", filepath)
 
-    # --- Writing operations (do not update the external index) ---
+    # --- Writing Operations ---
     def create_exercise(self, title: str, equipment: str) -> str:
         """Create a new exercise file.
         Note: This writes a new markdown file; the external index is not updated here."""
@@ -188,16 +220,20 @@ class DataManager:
         return filename
 
     def append_to_workout_session(self, session_filename: str, new_exercises: List[Dict[str, Any]]) -> None:
-        """Append new exercises to an existing workout session note."""
+        if not session_filename.endswith(".md"):
+            session_filename += ".md"
         filepath = self.notes_dir / session_filename
         fm, body = self.read_file(filepath)
         if "exercises" not in fm or not isinstance(fm["exercises"], list):
             fm["exercises"] = []
-        fm["exercises"].extend(new_exercises)
+        all_exercises = fm["exercises"] + new_exercises
+        fm["exercises"] = self.merge_exercise_entries(all_exercises)
         fm["dateModified"] = get_current_iso(with_seconds=False)
-        self.write_file(filepath, fm, body)
+        # Optionally, ignore the old body if you don't need it:
+        self.write_file(filepath, fm, "")
         self._session_cache = None
-        self.logger.info("Appended %d exercise(s) to session %s", len(new_exercises), session_filename)
+        self.logger.info("Merged %d exercise entry(ies) into session %s", len(new_exercises), session_filename)
+
 
     def toggle_exercise_planned(self, filename: str) -> bool:
         """Toggle the planned status of an exercise."""
@@ -242,8 +278,26 @@ class DataManager:
             self.logger.error("Error deleting exercise %s: %s", filename, err)
         self._exercise_cache = None
 
+    def merge_exercise_entries(self, exercises: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge duplicate exercise entries (by 'id') so that all sets for the same exercise are combined."""
+        merged = {}
+        for ex in exercises:
+            ex_id = ex.get("id")
+            if ex_id in merged:
+                merged[ex_id]["sets"].extend(ex.get("sets", []))
+            else:
+                # Create a new copy to avoid modifying the original list.
+                merged[ex_id] = {
+                    "id": ex.get("id"),
+                    "title": ex.get("title"),
+                    "sets": ex.get("sets", []).copy(),
+                }
+        return list(merged.values())
+
+
     def save_workout_session(self, exercises: List[Dict[str, Any]]) -> str:
-        """Save a workout session note with recorded exercises."""
+        """Save a workout session note with recorded exercises after merging duplicate entries."""
+        merged_exercises = self.merge_exercise_entries(exercises)
         uid = generate_unique_id()
         filename = f"{uid}.md"
         filepath = self.notes_dir / filename
@@ -256,12 +310,25 @@ class DataManager:
             "date": today_str,
             "dateCreated": iso_time,
             "dateModified": iso_time,
-            "exercises": exercises,
+            "exercises": merged_exercises,
         }
         self.write_file(filepath, frontmatter)
         self._session_cache = None
         self.logger.info("Saved workout session: %s", filename)
         return filename
+
+
+    def delete_workout_session(self, filename: str) -> None:
+        """Delete a workout session note."""
+        if not filename.endswith(".md"):
+            filename += ".md"
+        filepath = self.notes_dir / filename
+        try:
+            filepath.unlink()
+            self.logger.info("Deleted workout session file: %s", filename)
+        except Exception as err:
+            self.logger.error("Error deleting workout session %s: %s", filename, err)
+        self._session_cache = None
 
     def create_workout_template(self, name: str, description: str, exercises: List[Exercise]) -> str:
         """Create a new workout template note and return its filename."""
@@ -327,7 +394,7 @@ class DataManager:
                 exercises = self.load_exercises()
                 for session in sessions:
                     for ex in session.exercises:
-                        exercise_title = next((e.title for e in exercises if e.filename == ex.id), "")
+                        exercise_title = next((e.title for e in exercises if e.filename == ex.id), ex.title)
                         num_sets = len(ex.sets)
                         avg_reps = sum(s.reps for s in ex.sets) / num_sets if num_sets else 0
                         avg_weight = sum(s.weight for s in ex.sets) / num_sets if num_sets else 0
@@ -359,7 +426,7 @@ class DataManager:
                     "exercises": []
                 }
                 for ex in session.exercises:
-                    exercise_title = next((e.title for e in exercises if e.filename == ex.id), "")
+                    exercise_title = next((e.title for e in exercises if e.filename == ex.id), ex.title)
                     session_data["exercises"].append({
                         "exercise_title": exercise_title,
                         "sets": [{"reps": s.reps, "weight": s.weight} for s in ex.sets]
@@ -416,14 +483,18 @@ class DataManager:
         if self._exercise_cache is not None:
             return self._exercise_cache
         try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+            if not self.index_file.exists():
+                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
+                data = []
+            else:
+                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
         except Exception as err:
             self.logger.error("Error reading index file: %s", err)
             data = []
         exercises = []
         for note in data:
             meta = note.get("extra", note)
-            tags = meta.get("tags") or []  # Ensure tags is always a list.
+            tags = meta.get("tags") or []
             if "exercise" in tags:
                 filename = note.get("filename")
                 title = meta.get("title", filename)
@@ -439,19 +510,30 @@ class DataManager:
         self.logger.debug("Loaded %d exercises from index", len(exercises))
         return exercises
 
+    def search_exercises(self, keyword: str) -> List[Exercise]:
+        """Return a list of exercises whose title or equipment matches the given keyword."""
+        keyword_lower = keyword.lower()
+        return [ex for ex in self.load_exercises() 
+                if keyword_lower in ex.title.lower() 
+                or any(keyword_lower in eq.lower() for eq in ex.equipment)]
+
     def list_workout_sessions(self) -> List[WorkoutSession]:
         """Return a list of all workout sessions from the external index."""
         if self._session_cache is not None:
             return self._session_cache
         try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+            if not self.index_file.exists():
+                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
+                data = []
+            else:
+                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
         except Exception as err:
             self.logger.error("Error reading index file: %s", err)
             data = []
         sessions = []
         for note in data:
             meta = note.get("extra", note)
-            tags = meta.get("tags") or []  # Ensure tags is always iterable.
+            tags = meta.get("tags") or []
             if "workout" in tags:
                 filename = note.get("filename")
                 date_val = meta.get("date", "unknown")
@@ -463,10 +545,18 @@ class DataManager:
                     workout_sets = []
                     for s in sets:
                         try:
-                            workout_sets.append(WorkoutSet(reps=int(s.get("reps", 0)), weight=float(s.get("weight", 0))))
-                        except Exception:
-                            continue
-                    session_exercises.append(WorkoutExercise(id=ex.get("id"), title="", sets=workout_sets))
+                            reps = int(s.get("reps", 0))
+                            weight_str = s.get("weight", "0")
+# If weight is empty, treat it as 0.0
+                            weight = float(weight_str) if weight_str.strip() != "" else 0.0
+                            workout_sets.append(WorkoutSet(reps=reps, weight=weight))
+                        except Exception as e:
+                            self.logger.error("Error processing set: %s", e)
+# Optionally append a default set instead of skipping
+                            workout_sets.append(WorkoutSet(reps=0, weight=0.0))
+
+                    # Preserve the title from the saved session data.
+                    session_exercises.append(WorkoutExercise(id=ex.get("id"), title=ex.get("title", ""), sets=workout_sets))
                 sessions.append(WorkoutSession(filename=filename, date=date_val, title=title, exercises=session_exercises))
         sessions.sort(key=lambda s: s.date, reverse=True)
         self._session_cache = sessions
@@ -478,14 +568,18 @@ class DataManager:
         if self._template_cache is not None:
             return self._template_cache
         try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+            if not self.index_file.exists():
+                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
+                data = []
+            else:
+                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
         except Exception as err:
             self.logger.error("Error reading index file: %s", err)
             data = []
         templates = []
         for note in data:
             meta = note.get("extra", note)
-            tags = meta.get("tags") or []  # Ensure tags is a list.
+            tags = meta.get("tags") or []
             if "workout_template" in tags:
                 filename = note.get("filename")
                 title = meta.get("title", filename)
@@ -496,8 +590,6 @@ class DataManager:
         self._template_cache = templates
         self.logger.debug("Loaded %d workout templates from index", len(templates))
         return templates
-
-
 
 # --- UI Manager ---
 class UIManager:
@@ -515,6 +607,7 @@ class UIManager:
         self.stdscr.keypad(True)
         self.setup_colors()
         self.dm.logger.debug("UI Manager initialized.")
+        self.history_index = None
 
     def setup_colors(self) -> None:
         curses.start_color()
@@ -523,6 +616,7 @@ class UIManager:
         curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)     # Highlight
         curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW)   # Footer/Status
         curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_BLACK)    # Normal text
+        curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_RED)      # Modal / Alerts
 
     def draw_header(self, title: str) -> None:
         self.stdscr.attron(curses.color_pair(1))
@@ -551,18 +645,46 @@ class UIManager:
         self.stdscr.bkgd(" ", curses.color_pair(4))
         self.stdscr.refresh()
 
+    def show_help(self) -> None:
+        """Display a full-screen help/instructions overlay."""
+        self.clear_screen()
+        self.draw_header("Help & Instructions")
+        help_text = [
+            "Navigation:",
+            "  ↑/↓ or k/j : Move selection",
+            "  Enter      : Choose option",
+            "  Q          : Go back / Quit",
+            "",
+            "Common Keys:",
+            "  P          : Toggle Planned status",
+            "  S          : Search exercises",
+            "  F1 or H    : Show this help screen",
+            "",
+            "Features:",
+            "  Create, edit, delete exercises & templates",
+            "  Record workouts, view/filter history, export CSV/JSON",
+            "  View statistics, delete sessions, backup data",
+            "",
+            "Press any key to return to the main menu..."
+        ]
+        max_y, max_x = self.stdscr.getmaxyx()
+        for idx, line in enumerate(help_text, start=3):
+            if idx < max_y - 2:
+                self.stdscr.addstr(idx, 2, line[:max_x-4])
+        self.stdscr.refresh()
+        self.stdscr.getch()
+
+    # --- Updated "Add to Most Recent Workout" function ---
     def add_to_recent_workout(self) -> None:
-        """Allow the user to add an exercise to the most recent workout session."""
+        """Allow the user to add one or more exercises to the most recent workout session."""
         sessions = self.dm.list_workout_sessions()
         if not sessions:
             self.show_footer("No recent workout found.", 3)
             self.pause("Press any key to return to main menu...")
             return
 
-        # Assume the first session is the most recent.
         recent_session = sessions[0]
-
-        # Convert session exercises into a list of dicts for display.
+        # Build the current session summary from the session data.
         session_exercises = [
             {
                 "id": we.id,
@@ -572,25 +694,27 @@ class UIManager:
             for we in recent_session.exercises
         ]
 
-        self.clear_screen()
-        self.draw_header(f"Resume Workout: {recent_session.title}")
-        self.show_footer("Select an exercise to add to your workout", 3)
-
-        ex = self.choose_exercise(session_exercises)
-        if not ex:
-            self.show_footer("No exercise selected.", 3)
-            self.pause("Press any key to return to main menu...")
-            return
-
-        result = self.record_exercise(ex)
-        if not result:
-            self.show_footer("No exercise recorded.", 3)
-            self.pause("Press any key to return to main menu...")
-            return
-
-        self.dm.append_to_workout_session(recent_session.filename, [result])
-        self.show_footer(f"Exercise added to session '{recent_session.title}'.", 3)
-        self.pause("Press any key to return to main menu...")
+        # Allow the user to add multiple exercises in a loop.
+        while True:
+            self.clear_screen()
+            self.draw_header(f"Resume Workout: {recent_session.title}")
+            self.show_footer("Select an exercise to add (or press Q to finish)", 3)
+            ex = self.choose_exercise(session_exercises)
+            if not ex:
+                break  # User cancelled selection.
+            result = self.record_exercise(ex)
+            if not result:
+                self.show_footer("No exercise recorded.", 3)
+                self.pause("Press any key to return to main menu...")
+                return
+            # Append new exercise both to file and local summary for preview.
+            session_exercises.append(result)
+            self.dm.append_to_workout_session(recent_session.filename, [result])
+            flash_message(self.stdscr, f"Exercise added to '{recent_session.title}'")
+            # Ask if user wants to add another exercise.
+            cont = self.prompt_input("Add another exercise? (y/N): ", curses.LINES - 3, 2)
+            if cont.lower() != "y":
+                break
 
     def prompt_input(self, prompt: str, y: int, x: int, default: str = "") -> str:
         self.stdscr.addstr(y, x, prompt)
@@ -654,7 +778,7 @@ class UIManager:
             self.show_footer("No sets recorded for this exercise.", 3)
             self.pause()
             return None
-        self.pause("Exercise sets recorded. Press any key to continue...")
+        flash_message(self.stdscr, "Exercise sets recorded.")
         self.dm.logger.debug("Recorded %d sets for %s", len(recorded_sets), exercise.title)
         return {"id": exercise.filename, "title": exercise.title, "sets": recorded_sets}
 
@@ -673,15 +797,15 @@ class UIManager:
             self.clear_screen()
             self.draw_header("Recording Workout Session")
             add_more = self.prompt_input("Add another exercise? (y/N): ", curses.LINES - 4, 2)
-            if add_more.lower() != "y":
+            if add_more.lower() == "n":
                 break
         if not session_exercises:
             self.show_footer("No exercises recorded for this session.", 3)
             self.pause()
             return
         self.dm.save_workout_session(session_exercises)
-        self.show_footer("Workout session saved.", 3)
-        self.pause("Session complete. Press any key to return to the main menu...")
+        flash_message(self.stdscr, "Workout session saved.")
+        self.pause("Session complete. Press any key to return to main menu...")
         self.dm.logger.info("Session recorded with %d exercises", len(session_exercises))
 
     def build_history_index(self) -> dict:
@@ -696,7 +820,7 @@ class UIManager:
         return history_index
 
     def show_exercise_history_popup(self, exercise: Exercise) -> None:
-        if not hasattr(self, "history_index") or self.history_index is None:
+        if not self.history_index:
             self.history_index = self.build_history_index()
         details = self.history_index.get(exercise.filename, [])
         max_y, max_x = self.stdscr.getmaxyx()
@@ -720,7 +844,6 @@ class UIManager:
         win.addstr(popup_h - 2, 2, "Press any key to close...")
         win.refresh()
         win.getch()
-        del win
         self.clear_screen()
         self.draw_header("Select an Exercise (or / to search)")
 
@@ -730,39 +853,63 @@ class UIManager:
         popup_w = min(70, max_x - 4)
         begin_y = (max_y - popup_h) // 2
         begin_x = (max_x - popup_w) // 2
-        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
-        draw_box(win, " Session Summary ")
+
+        # Build the content lines
+        lines = []
         if not session_exercises:
-            win.addstr(2, 2, "No exercises recorded yet.")
+            lines.append("No exercises recorded yet.")
         else:
-            row = 2
             for ex in session_exercises:
                 title = ex.get("title", "Unknown")
                 sets = ex.get("sets", [])
-                line = f"{title} - {len(sets)} set(s)"
-                win.addnstr(row, 2, line, popup_w - 4)
-                row += 1
+                lines.append(f"{title} - {len(sets)} set(s)")
                 for idx, s in enumerate(sets, start=1):
                     detail = f"  Set {idx}: {s.get('reps', '')} reps @ {s.get('weight', '')}"
-                    if row < popup_h - 2:
-                        win.addnstr(row, 4, detail, popup_w - 6)
-                        row += 1
-                    else:
-                        break
-                if row < popup_h - 2:
-                    row += 1
-                else:
-                    break
-        win.addnstr(popup_h - 2, 2, "Press any key to close...", popup_w - 4)
+                    lines.append(detail)
+                lines.append("")  # Blank line for spacing
+
+        # Determine pad height and create pad (subtracting border width)
+        pad_height = len(lines)
+        pad_width = popup_w - 2
+        pad = curses.newpad(pad_height, pad_width)
+        for i, line in enumerate(lines):
+            try:
+                pad.addstr(i, 0, line)
+            except curses.error:
+                pass
+
+        # Create the popup window for the border and title
+        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        draw_box(win, " Session Summary (scrollable) ")
         win.refresh()
-        win.getch()
+
+        # Initial pad display starting row
+        pad_top = 0
+        # Instructions shown in footer
+        self.show_footer("Use UP/DOWN arrows (or k/j) to scroll; any other key to close", 3)
+        while True:
+            try:
+                pad.refresh(pad_top, 0, begin_y + 1, begin_x + 1, begin_y + popup_h - 2, begin_x + popup_w - 2)
+            except curses.error:
+                pass
+            ch = self.stdscr.getch()
+            if ch in (curses.KEY_UP, ord('k')):
+                if pad_top > 0:
+                    pad_top -= 1
+            elif ch in (curses.KEY_DOWN, ord('j')):
+                if pad_top < pad_height - (popup_h - 2):
+                    pad_top += 1
+            else:
+                break
+
         self.clear_screen()
         self.draw_header("Select an Exercise (or / to search)")
+
 
     def choose_exercise(self, session_exercises: List[Dict[str, Any]], exercises: Optional[List[Exercise]] = None) -> Optional[Exercise]:
         if exercises is None:
             exercises = self.dm.load_exercises()
-        if not hasattr(self, "history_index") or self.history_index is None:
+        if not self.history_index:
             self.history_index = self.build_history_index()
         cursor = 0
         offset = 0
@@ -789,10 +936,11 @@ class UIManager:
                 else:
                     self.stdscr.addstr(row, 2, line[:max_x-4])
             key_hint = ("↑/↓: Move | Enter: Select | P: Toggle Planned | " +
-                        "S: Search | D: Session Summary | H: Exercise History | Q: Cancel")
+                        "S: Search | D: Session Summary | H: History | F1: Help | Q: Cancel")
             self.show_footer(key_hint, 3)
             self.stdscr.refresh()
             preview_h = 18
+                        # Create the preview window as before.
             preview_win = curses.newwin(preview_h, max_x-2, max_y - preview_h - 2, 1)
             draw_box(preview_win, " Preview ")
             selected = exercises[cursor]
@@ -801,31 +949,84 @@ class UIManager:
             preview_win.addstr(2, 2, f"Equipment: {equip}")
             status = "Planned" if selected.planned else "Not Planned"
             preview_win.addstr(3, 2, f"Status: {status}")
-            preview_win.addstr(4, 2, "Recent History:")
-            recent_history_max_lines = preview_h - 8
-            line_idx = 5
-            recent_sessions = self.history_index.get(selected.filename, [])
-            if recent_sessions:
-                for date, sets in recent_sessions[:3]:
-                    if (line_idx - 5) < recent_history_max_lines:
-                        set_str = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
+
+            # Compute all-time statistics using the history index.
+            history = self.history_index.get(selected.filename, [])
+            total_sets = 0
+            highest_reps = 0
+            highest_weight = 0.0
+            for sess_date, sets in history:
+                total_sets += len(sets)
+                for s in sets:
+                    # If s is a dictionary, use .get(), otherwise assume it's a WorkoutSet object.
+                    if hasattr(s, "get"):
+                        try:
+                            reps = int(s.get("reps", 0))
+                        except Exception:
+                            reps = 0
+                        try:
+                            weight = float(s.get("weight", 0))
+                        except Exception:
+                            weight = 0.0
+                    else:
+                        reps = s.reps
+                        weight = s.weight
+                    highest_reps = max(highest_reps, reps)
+                    highest_weight = max(highest_weight, weight)
+
+# Display the computed all-time stats as before...
+            preview_win.addstr(4, 2, f"All Time Sets: {total_sets}")
+            preview_win.addstr(5, 2, f"Highest Reps: {highest_reps}")
+            preview_win.addstr(6, 2, f"Highest Weight: {highest_weight}")
+
+# Updated recent history section:
+            preview_win.addstr(7, 2, "Recent History:")
+            recent_history_max_lines = preview_h - 10
+            line_idx = 8
+            if history:
+                # Only show up to 3 recent sessions
+                for date, sets in history[:3]:
+                    if (line_idx - 8) < recent_history_max_lines:
+                        set_str_items = []
+                        for s in sets:
+                            if hasattr(s, "get"):
+                                reps = s.get("reps", "")
+                                weight = s.get("weight", "")
+                            else:
+                                reps = s.reps
+                                weight = s.weight
+                            set_str_items.append(f"{reps}r@{weight}")
+                        set_str = ", ".join(set_str_items)
                         preview_win.addstr(line_idx, 2, f"{date}: {set_str}"[:max_x-4])
                         line_idx += 1
                     else:
                         break
             else:
                 preview_win.addstr(line_idx, 2, "No past sessions.")
+
             divider_line = preview_h - 8
             preview_win.addstr(divider_line, 2, "-" * (max_x - 6))
             summary_title_line = divider_line + 1
             preview_win.addstr(summary_title_line, 2, "Current Session Summary:")
+            preview_win.refresh()
+
             summary_line = summary_title_line + 1
+            # Inside choose_exercise, where we render the current session summary:
             if session_exercises:
                 for recorded_ex in session_exercises:
                     if summary_line < preview_h - 1:
+                        # Check if recorded_ex supports the .get method (i.e. is a dict)
+                        if hasattr(recorded_ex, "get"):
+                            rec_title = recorded_ex.get("title", "")
+                            rec_sets = recorded_ex.get("sets", [])
+                        else:
+                            # Otherwise, assume it's an Exercise instance
+                            rec_title = recorded_ex.title
+                            rec_sets = []  # No recorded sets for a plain Exercise object
                         preview_win.addstr(summary_line, 4,
-                                            f"• {recorded_ex.get('title','')} - {len(recorded_ex.get('sets', []))} set(s)")
+                                            f"• {rec_title} - {len(rec_sets)} set(s)")
                         summary_line += 1
+
             else:
                 preview_win.addstr(summary_line, 4, "(none)")
             preview_win.refresh()
@@ -844,14 +1045,11 @@ class UIManager:
                 self.dm.logger.debug("Exercise selected: %s", exercises[cursor].title)
                 return exercises[cursor]
             elif k in (ord('p'), ord('P')):
-                if exercises:
-                    ex = exercises[cursor]
-                    new_state = self.dm.toggle_exercise_planned(ex.filename)
-                    ex.planned = new_state
-                    state_text = "Planned" if new_state else "Not Planned"
-                    self.show_footer(f"'{ex.title}' toggled to {state_text}", 3)
-                    self.pause("Press any key...")
-                    self.dm.logger.info("Toggled planned status for: %s", ex.title)
+                ex = exercises[cursor]
+                new_state = self.dm.toggle_exercise_planned(ex.filename)
+                ex.planned = new_state
+                state_text = "Planned" if new_state else "Not Planned"
+                flash_message(self.stdscr, f"'{ex.title}' toggled to {state_text}")
             elif k in (ord('s'), ord('S')):
                 keyword = self.prompt_input("Search keyword: ", 2, 2)
                 if keyword:
@@ -862,6 +1060,8 @@ class UIManager:
                 self.show_session_summary_popup(session_exercises)
             elif k in (ord('h'), ord('H')):
                 self.show_exercise_history_popup(exercises[cursor])
+            elif k in (curses.KEY_F1, ord('h')):
+                self.show_help()
             elif k in (ord('q'), ord('Q')):
                 return None
 
@@ -911,7 +1111,7 @@ class UIManager:
             self.show_footer("No valid exercises found in template.", 3)
             self.pause()
             return
-        self.show_footer(f"Starting workout from template '{tmpl.title}'", 3)
+        flash_message(self.stdscr, f"Starting session from template '{tmpl.title}'")
         self.pause("Press any key to continue...")
         self.dm.logger.info("Starting session from template: %s", tmpl.title)
         self.record_session(prepopulated=tmpl_exercises)
@@ -940,7 +1140,7 @@ class UIManager:
             self.pause()
             return
         self.dm.create_workout_template(tmpl_name, tmpl_desc, exercises)
-        self.show_footer(f"Template '{tmpl_name}' created.", 3)
+        flash_message(self.stdscr, f"Template '{tmpl_name}' created.")
         self.pause("Press any key to return to main menu...")
         self.dm.logger.info("Created workout template: %s", tmpl_name)
 
@@ -952,33 +1152,56 @@ class UIManager:
         self.draw_header("Edit Workout Template")
         new_name = self.prompt_input(f"New name [{tmpl.title}]: ", 4, 4, tmpl.title)
         new_desc = self.prompt_input(f"New description [{tmpl.description}]: ", 5, 4, tmpl.description)
-        rebuild = self.prompt_input("Rebuild exercise list? (y/N): ", 7, 4)
-        exercises = []
-        if rebuild.lower() == 'y':
-            while True:
-                add = self.prompt_input("Add an exercise? (y/N): ", 9, 4)
-                if add.lower() != "y":
+
+        # Convert stored exercise filenames into exercise objects
+        current_exercises = []
+        all_exercises = self.dm.load_exercises()
+        for ex_id in tmpl.exercises:
+            for ex in all_exercises:
+                if ex.filename == ex_id:
+                    current_exercises.append(ex)
                     break
-                ex = self.choose_exercise([])
-                if ex:
-                    exercises.append(ex)
-                else:
-                    break
-            if not exercises:
-                self.show_footer("No exercises selected. Edit cancelled.", 3)
-                self.pause()
-                return
-        else:
-            ex_list = self.dm.load_exercises()
-            for ex_id in tmpl.exercises:
-                for ex in ex_list:
-                    if ex.filename == ex_id:
-                        exercises.append(ex)
-                        break
-        self.dm.update_template(tmpl.filename, new_name, new_desc, exercises)
-        self.show_footer(f"Template '{new_name}' updated.", 3)
+
+        # Start with the current exercise list and allow editing
+        edited_exercises = current_exercises[:]  # Make a copy for editing
+
+        while True:
+            self.clear_screen()
+            self.draw_header("Edit Template Exercise List")
+            # Display the current list of exercises in the template
+            self.stdscr.addstr(3, 4, "Current exercises in template:")
+            for idx, ex in enumerate(edited_exercises, start=1):
+                self.stdscr.addstr(3 + idx, 6, f"{idx}. {ex.title}")
+            # Show interactive options
+            self.show_footer("A: Add, R: Remove, D: Done", 3)
+            self.stdscr.refresh()
+            ch = self.stdscr.getch()
+            if ch in (ord('a'), ord('A')):
+                # Add an exercise
+                ex_to_add = self.choose_exercise(edited_exercises)
+                if ex_to_add and ex_to_add not in edited_exercises:
+                    edited_exercises.append(ex_to_add)
+                    flash_message(self.stdscr, f"Added '{ex_to_add.title}'")
+            elif ch in (ord('r'), ord('R')):
+                # Remove an exercise by number
+                num_str = self.prompt_input("Enter number to remove: ", curses.LINES - 3, 2)
+                try:
+                    num = int(num_str)
+                    if 1 <= num <= len(edited_exercises):
+                        removed = edited_exercises.pop(num - 1)
+                        flash_message(self.stdscr, f"Removed '{removed.title}'")
+                    else:
+                        flash_message(self.stdscr, "Invalid number.")
+                except Exception:
+                    flash_message(self.stdscr, "Invalid input.")
+            elif ch in (ord('d'), ord('D')):
+                break
+
+        self.dm.update_template(tmpl.filename, new_name, new_desc, edited_exercises)
+        flash_message(self.stdscr, f"Template '{new_name}' updated.")
         self.pause("Press any key to return to main menu...")
         self.dm.logger.info("Edited template: %s", new_name)
+
 
     def delete_template_ui(self) -> None:
         tmpl = self.list_templates()
@@ -986,13 +1209,12 @@ class UIManager:
             return
         self.clear_screen()
         self.draw_header("Delete Workout Template")
-        confirm = self.prompt_input(f"Delete template '{tmpl.title}'? (y/N): ", 4, 4)
-        if confirm.lower() == "y":
+        if modal_confirm(self.stdscr, f"Delete template '{tmpl.title}'?"):
             self.dm.delete_template(tmpl.filename)
-            self.show_footer(f"Template '{tmpl.title}' deleted.", 3)
+            flash_message(self.stdscr, f"Template '{tmpl.title}' deleted.")
             self.dm.logger.info("Deleted template: %s", tmpl.title)
         else:
-            self.show_footer("Deletion cancelled.", 3)
+            flash_message(self.stdscr, "Deletion cancelled.")
         self.pause("Press any key to return to main menu...")
 
     def add_new_exercise(self) -> None:
@@ -1002,11 +1224,11 @@ class UIManager:
         equipment = self.prompt_input("Equipment (comma separated): ", 5, 4)
         if title:
             self.dm.create_exercise(title, equipment)
-            self.show_footer(f"New exercise '{title}' created.", 3)
-            self.pause("Exercise created. Press any key to continue...")
+            flash_message(self.stdscr, f"New exercise '{title}' created.")
+            self.pause("Press any key to continue...")
             self.dm.logger.info("New exercise created: %s", title)
         else:
-            self.show_footer("No title provided. Cancelled.", 3)
+            flash_message(self.stdscr, "No title provided. Cancelled.")
             self.pause("Press any key to return to main menu...")
 
     def edit_exercise_ui(self) -> None:
@@ -1031,18 +1253,16 @@ class UIManager:
             self.show_footer("↑/↓: Move | Enter: Edit | Q: Cancel", 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
-            if k in (curses.KEY_UP, ord('k')):
-                if cursor > 0:
-                    cursor -= 1
-            elif k in (curses.KEY_DOWN, ord('j')):
-                if cursor < len(exercises) - 1:
-                    cursor += 1
+            if k in (curses.KEY_UP, ord('k')) and cursor > 0:
+                cursor -= 1
+            elif k in (curses.KEY_DOWN, ord('j')) and cursor < len(exercises) - 1:
+                cursor += 1
             elif k in (10, 13):
                 ex = exercises[cursor]
                 new_title = self.prompt_input(f"New title [{ex.title}]: ", 2, 2, ex.title)
                 new_equipment = self.prompt_input(f"New equipment (comma separated) [{', '.join(ex.equipment)}]: ", 3, 2, ", ".join(ex.equipment))
                 self.dm.edit_exercise(ex.filename, new_title, new_equipment)
-                self.show_footer("Exercise updated.", 3)
+                flash_message(self.stdscr, "Exercise updated.")
                 self.pause("Press any key to return to main menu...")
                 break
             elif k in (ord('q'), ord('Q')):
@@ -1070,19 +1290,20 @@ class UIManager:
             self.show_footer("↑/↓: Move | Enter: Delete | Q: Cancel", 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
-            if k in (curses.KEY_UP, ord('k')):
-                if cursor > 0:
-                    cursor -= 1
-            elif k in (curses.KEY_DOWN, ord('j')):
-                if cursor < len(exercises) - 1:
-                    cursor += 1
+            if k in (curses.KEY_UP, ord('k')) and cursor > 0:
+                cursor -= 1
+            elif k in (curses.KEY_DOWN, ord('j')) and cursor < len(exercises) - 1:
+                cursor += 1
             elif k in (10, 13):
                 ex = exercises[cursor]
-                confirm = self.prompt_input(f"Delete exercise '{ex.title}'? (y/N): ", 2, 2)
-                if confirm.lower() == "y":
+                if modal_confirm(self.stdscr, f"Delete exercise '{ex.title}'?"):
                     self.dm.delete_exercise(ex.filename)
-                    self.show_footer("Exercise deleted.", 3)
+                    flash_message(self.stdscr, "Exercise deleted.")
                     self.pause("Press any key to return to main menu...")
+                    break
+                else:
+                    flash_message(self.stdscr, "Deletion cancelled.")
+                    self.pause("Press any key...")
                     break
             elif k in (ord('q'), ord('Q')):
                 break
@@ -1113,12 +1334,10 @@ class UIManager:
             self.show_footer(hint, 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
-            if k in (curses.KEY_UP, ord('k')):
-                if cursor > 0:
-                    cursor -= 1
-            elif k in (curses.KEY_DOWN, ord('j')):
-                if cursor < len(filtered_sessions) - 1:
-                    cursor += 1
+            if k in (curses.KEY_UP, ord('k')) and cursor > 0:
+                cursor -= 1
+            elif k in (curses.KEY_DOWN, ord('j')) and cursor < len(filtered_sessions) - 1:
+                cursor += 1
             elif k in (10, 13):
                 self.show_session_details(filtered_sessions[cursor])
             elif k in (ord('f'), ord('F')):
@@ -1133,33 +1352,69 @@ class UIManager:
                 break
 
     def show_session_details(self, session: WorkoutSession) -> None:
-        self.clear_screen()
-        self.draw_header(f"Session Details: {session.title}")
         max_y, max_x = self.stdscr.getmaxyx()
-        details_win = curses.newwin(max_y - 6, max_x - 4, 3, 2)
-        draw_box(details_win, " Session Info ")
-        details_win.addstr(1, 2, f"Date: {session.date}")
-        details_win.addstr(2, 2, f"Title: {session.title}")
-        details_win.addstr(4, 2, "Exercises:")
-        line = 5
+        # Define popup dimensions (adjust as needed)
+        popup_h = min(20, max_y - 4)
+        popup_w = min(70, max_x - 4)
+        begin_y = (max_y - popup_h) // 2
+        begin_x = (max_x - popup_w) // 2
+
+        # Build session details content as a list of strings
+        lines = []
+        lines.append(f"Date: {session.date}")
+        lines.append(f"Title: {session.title}")
+        lines.append("")
+        lines.append("Exercises:")
+        lines.append("")
         all_exercises = self.dm.load_exercises()
         for ex in session.exercises:
-            ex_title = next((e.title for e in all_exercises if e.filename == ex.id), ex.id)
-            details_win.addstr(line, 4, f"- {ex_title} ({len(ex.sets)} set(s))")
-            line += 1
+            ex_title = next((e.title for e in all_exercises if e.filename == ex.id), ex.title or ex.id)
+            lines.append(f"- {ex_title} ({len(ex.sets)} set(s))")
             for idx, s in enumerate(ex.sets, start=1):
-                details_win.addstr(line, 6, f"Set {idx}: Reps: {s.reps}, Weight: {s.weight}")
-                line += 1
+                lines.append(f"  Set {idx}: Reps: {s.reps}, Weight: {s.weight}")
             total_reps = sum(s.reps for s in ex.sets)
             total_weight = sum(s.weight for s in ex.sets)
             avg_weight = total_weight / len(ex.sets) if ex.sets else 0
-            details_win.addstr(line, 6, f"Totals: {total_reps} reps, Total Weight: {total_weight:.1f}, Avg Weight: {avg_weight:.1f}")
-            line += 2
-            if line > max_y - 3:
-                details_win.addstr(max_y - 3, 2, "-- More details available, resize window for full view --")
+            lines.append(f"  Totals: {total_reps} reps, Total Weight: {total_weight:.1f}, Avg Weight: {avg_weight:.1f}")
+            lines.append("")  # Blank line for spacing
+
+        # Create a pad with enough height for all lines and a width a bit smaller than the popup.
+        pad_height = len(lines)
+        pad_width = popup_w - 2
+        pad = curses.newpad(pad_height, pad_width)
+        for i, line in enumerate(lines):
+            try:
+                pad.addnstr(i, 0, line, pad_width - 1)
+            except curses.error:
+                pass
+
+        # Create the popup window (for border and title)
+        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        draw_box(win, " Session Details (scrollable) ")
+        win.refresh()
+
+        pad_top = 0
+        # Display instructions in the footer
+        self.show_footer("Use UP/DOWN arrows (or k/j) to scroll; any other key to close", 3)
+        while True:
+            try:
+                pad.refresh(pad_top, 0, begin_y + 1, begin_x + 1, begin_y + popup_h - 2, begin_x + popup_w - 2)
+            except curses.error:
+                pass
+            ch = self.stdscr.getch()
+            if ch in (curses.KEY_UP, ord('k')):
+                if pad_top > 0:
+                    pad_top -= 1
+            elif ch in (curses.KEY_DOWN, ord('j')):
+                if pad_top < pad_height - (popup_h - 2):
+                    pad_top += 1
+            else:
                 break
-        details_win.refresh()
-        self.pause("Press any key to return to history view...")
+
+        self.clear_screen()
+        self.draw_header("Select an Exercise (or / to search)")
+
+
 
     def delete_session_ui(self) -> None:
         sessions = self.dm.list_workout_sessions()
@@ -1183,18 +1438,15 @@ class UIManager:
             self.show_footer("↑/↓: Move | Enter: Delete | Q: Cancel", 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
-            if k in (curses.KEY_UP, ord('k')):
-                if cursor > 0:
-                    cursor -= 1
-            elif k in (curses.KEY_DOWN, ord('j')):
-                if cursor < len(sessions) - 1:
-                    cursor += 1
+            if k in (curses.KEY_UP, ord('k')) and cursor > 0:
+                cursor -= 1
+            elif k in (curses.KEY_DOWN, ord('j')) and cursor < len(sessions) - 1:
+                cursor += 1
             elif k in (10, 13):
                 sess = sessions[cursor]
-                confirm = self.prompt_input(f"Delete session '{sess.title}'? (y/N): ", 2, 2)
-                if confirm.lower() == "y":
+                if modal_confirm(self.stdscr, f"Delete session '{sess.title}'?"):
                     self.dm.delete_workout_session(sess.filename)
-                    self.show_footer("Session deleted.", 3)
+                    flash_message(self.stdscr, "Session deleted.")
                     self.pause("Press any key to return to main menu...")
                     break
             elif k in (ord('q'), ord('Q')):
@@ -1228,30 +1480,6 @@ class UIManager:
         self.stdscr.refresh()
         self.pause("Press any key to return to main menu...")
 
-    def show_about(self) -> None:
-        self.clear_screen()
-        self.draw_header("About Ultimate Workout Logger")
-        about_text = [
-            "Ultimate Workout Logger v2.0",
-            "Developed for power users who want complete control",
-            "over their fitness data.",
-            "",
-            "Features:",
-            " - Record & manage workouts",
-            " - Edit, delete, search exercises & sessions",
-            " - View aggregated statistics",
-            " - Export data in CSV/JSON",
-            " - Automated backup",
-            "",
-            "Press any key to return to the main menu..."
-        ]
-        max_y, max_x = self.stdscr.getmaxyx()
-        for idx, line in enumerate(about_text, start=3):
-            if idx < max_y - 2:
-                self.stdscr.addstr(idx, 2, line[:max_x-4])
-        self.stdscr.refresh()
-        self.stdscr.getch()
-
     def export_history_ui(self) -> None:
         self.clear_screen()
         self.draw_header("Export Workout History")
@@ -1262,41 +1490,14 @@ class UIManager:
             self.dm.export_history_json(export_path)
         else:
             self.dm.export_history_csv(export_path)
-        self.show_footer(f"History exported to {export_path}", 3)
+        flash_message(self.stdscr, f"History exported to {export_path}")
         self.pause("Press any key to return to main menu...")
         self.dm.logger.info("Workout history exported to: %s", export_path)
-
-    def show_help(self) -> None:
-        self.clear_screen()
-        self.draw_header("Help & Instructions")
-        help_text = [
-            "Navigation:",
-            "  ↑/↓ or k/j : Move selection",
-            "  Enter      : Choose option",
-            "  Q          : Go back / Quit",
-            "",
-            "In Exercise Selection:",
-            "  P          : Toggle Planned status",
-            "  S          : Search exercises",
-            "",
-            "Other Features:",
-            "  Create, edit, delete exercises & templates",
-            "  Record workouts, view/filter history, export CSV/JSON",
-            "  View statistics, delete sessions, backup data",
-            "",
-            "Press any key to return to the main menu..."
-        ]
-        max_y, max_x = self.stdscr.getmaxyx()
-        for idx, line in enumerate(help_text, start=3):
-            if idx < max_y - 2:
-                self.stdscr.addstr(idx, 2, line[:max_x-4])
-        self.stdscr.refresh()
-        self.stdscr.getch()
 
     def main_menu(self) -> None:
         menu_options = [
             ("Record a Workout Session", self.record_session),
-            ("Add to Most Recent Workout", self.add_to_recent_workout),  # New option
+            ("Add to Most Recent Workout", self.add_to_recent_workout),
             ("View Workout History", self.view_history),
             ("Delete a Workout Session", self.delete_session_ui),
             ("Create a New Exercise", self.add_new_exercise),
@@ -1309,7 +1510,7 @@ class UIManager:
             ("Export Workout History", self.export_history_ui),
             ("View Statistics", self.view_statistics),
             ("Backup Data", self.backup_data_ui),
-            ("About", self.show_about),
+            ("About", self.show_help),
             ("Help", self.show_help),
             ("Quit", None),
         ]
@@ -1325,7 +1526,7 @@ class UIManager:
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
                     self.stdscr.addstr(y, 4, f"  {option}")
-            hint = "↑/↓: Move | Enter: Select | Q: Quit"
+            hint = "↑/↓: Move | Enter: Select | Q: Quit | F1: Help"
             self.show_footer(hint, 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
@@ -1341,6 +1542,8 @@ class UIManager:
             elif k in (ord('q'), ord('Q')):
                 self.dm.logger.info("User requested exit from main menu.")
                 break
+            elif k in (curses.KEY_F1, ord('h')):
+                self.show_help()
 
 # --- Main Entrypoint ---
 def main(stdscr: Any) -> None:
