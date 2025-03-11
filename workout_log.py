@@ -359,9 +359,9 @@ class DataManager:
         """Update an existing workout template.
         Note: Does not update the external index."""
 
+        tmpl_filename += ".md"
         filepath = self.notes_dir / tmpl_filename
-        if not filepath.endswith(".md"):
-            filepath += ".md"
+        # filename = f"{uid}.md"
         if not filepath.exists():
             self.logger.error("Template %s not found", tmpl_filename)
             return
