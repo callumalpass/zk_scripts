@@ -32,7 +32,7 @@ import shutil
 import yaml
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 
@@ -110,7 +110,7 @@ def modal_confirm(stdscr: Any, message: str) -> bool:
         ch = stdscr.getch()
         if ch in (ord('y'), ord('Y')):
             return True
-        elif ch in (ord('n'), ord('N'), ord('q'), ord('Q')):
+        elif ch in (ord('n'), ord('N'), ord('q'), ord('Q'), 27): # Added ESC to cancel
             return False
 
 def flash_message(stdscr: Any, message: str, duration_ms: int = 1500) -> None:
@@ -513,8 +513,8 @@ class DataManager:
     def search_exercises(self, keyword: str) -> List[Exercise]:
         """Return a list of exercises whose title or equipment matches the given keyword."""
         keyword_lower = keyword.lower()
-        return [ex for ex in self.load_exercises() 
-                if keyword_lower in ex.title.lower() 
+        return [ex for ex in self.load_exercises()
+                if keyword_lower in ex.title.lower()
                 or any(keyword_lower in eq.lower() for eq in ex.equipment)]
 
     def list_workout_sessions(self) -> List[WorkoutSession]:
@@ -645,28 +645,77 @@ class UIManager:
         self.stdscr.bkgd(" ", curses.color_pair(4))
         self.stdscr.refresh()
 
-    def show_help(self) -> None:
-        """Display a full-screen help/instructions overlay."""
+    def show_help(self, context: str = "main") -> None:
+        """Display help, optionally contextual."""
         self.clear_screen()
-        self.draw_header("Help & Instructions")
-        help_text = [
-            "Navigation:",
-            "  ↑/↓ or k/j : Move selection",
-            "  Enter      : Choose option",
-            "  Q          : Go back / Quit",
-            "",
-            "Common Keys:",
-            "  P          : Toggle Planned status",
-            "  S          : Search exercises",
-            "  F1 or H    : Show this help screen",
-            "",
-            "Features:",
-            "  Create, edit, delete exercises & templates",
-            "  Record workouts, view/filter history, export CSV/JSON",
-            "  View statistics, delete sessions, backup data",
-            "",
-            "Press any key to return to the main menu..."
-        ]
+
+        if context == "main":
+            self.draw_header("Help & Instructions - Main Menu")
+            help_text = [
+                "Navigation:",
+                "  ↑/↓ or k/j : Move selection",
+                "  Enter      : Choose option",
+                "  Esc        : Go Back",
+                "  Q          : Quit",
+                "",
+                "Press any key to return..."
+            ]
+        elif context == "exercise_select":
+            self.draw_header("Help - Exercise Selection")
+            help_text = [
+                "  ↑/↓ or k/j : Move selection",
+                "  Enter      : Select exercise",
+                "  P          : Toggle 'Planned' status",
+                "  S          : Search",
+                "  D          : Session Summary",
+                "  H          : Exercise History",
+                "  Esc          : Cancel",
+                "",
+                "Press any key to return..."
+            ]
+        elif context == "edit_exercise":
+            self.draw_header("Help - Edit Exercise")
+            help_text = [
+                "  ↑/↓ or k/j : Move selection",
+                "  Enter      : Edit Exercise",
+                "  T          : Toggle 'Planned' status",
+                "  D          : Delete Exercise",
+                "  Esc        : Back to Menu",
+                "",
+                "Press any key to return..."
+            ]
+        elif context == "history_view":
+            self.draw_header("Help - Workout History")
+            help_text = [
+                "  ↑/↓ or k/j : Move selection",
+                "  Enter      : View Session Details",
+                "  F          : Filter Sessions",
+                "  Esc        : Back to Menu",
+                "",
+                "Press any key to return..."
+            ]
+        else: # Default main help
+            self.draw_header("Help & Instructions")
+            help_text = [
+                "Navigation:",
+                "  ↑/↓ or k/j : Move selection",
+                "  Enter      : Choose option",
+                "  Esc        : Go back / Quit",
+                "  Q          : Quit",
+                "",
+                "Common Keys:",
+                "  P          : Toggle Planned status (Exercises)",
+                "  S          : Search exercises",
+                "  F1 or H    : Show this help screen",
+                "",
+                "Features:",
+                "  Create, edit, delete exercises & templates",
+                "  Record workouts, view/filter history, export CSV/JSON",
+                "  View statistics, delete sessions, backup data",
+                "",
+                "Press any key to return to the main menu..."
+            ]
+
         max_y, max_x = self.stdscr.getmaxyx()
         for idx, line in enumerate(help_text, start=3):
             if idx < max_y - 2:
@@ -713,7 +762,7 @@ class UIManager:
             flash_message(self.stdscr, f"Exercise added to '{recent_session.title}'")
             # Ask if user wants to add another exercise.
             cont = self.prompt_input("Add another exercise? (y/N): ", curses.LINES - 3, 2)
-            if cont.lower() != "y":
+            if cont.lower() == "n":
                 break
 
     def prompt_input(self, prompt: str, y: int, x: int, default: str = "") -> str:
@@ -778,14 +827,14 @@ class UIManager:
             self.show_footer("No sets recorded for this exercise.", 3)
             self.pause()
             return None
-        flash_message(self.stdscr, "Exercise sets recorded.")
+        # flash_message(self.stdscr, "Exercise sets recorded.")
         self.dm.logger.debug("Recorded %d sets for %s", len(recorded_sets), exercise.title)
         return {"id": exercise.filename, "title": exercise.title, "sets": recorded_sets}
 
     def record_session(self, prepopulated: Optional[List[Exercise]] = None) -> None:
         self.clear_screen()
         self.draw_header("Start Workout Session")
-        self.pause("Get ready! Press any key to begin your workout...")
+        # self.pause("Get ready! Press any key to begin your workout...")
         session_exercises = []
         while True:
             ex = self.choose_exercise(session_exercises, exercises=prepopulated)
@@ -913,7 +962,7 @@ class UIManager:
             self.history_index = self.build_history_index()
         # Sort exercises by the total number of recorded sets (descending order)
         exercises.sort(key=lambda ex: sum(len(sets) for (_, sets) in self.history_index.get(ex.filename, [])), reverse=True)
-        
+
         cursor = 0
         offset = 0
         while True:
@@ -939,7 +988,7 @@ class UIManager:
                 else:
                     self.stdscr.addstr(row, 2, line[:max_x-4])
             key_hint = ("↑/↓: Move | Enter: Select | P: Toggle Planned | " +
-                        "S: Search | D: Session Summary | H: History | F1: Help | Q: Cancel")
+                        "S: Search | D: Session Summary | H: History | F1: Help | Esc: Back") # Changed Q to Esc
             self.show_footer(key_hint, 3)
             self.stdscr.refresh()
             preview_h = 18
@@ -1053,8 +1102,8 @@ class UIManager:
             elif k in (ord('h'), ord('H')):
                 self.show_exercise_history_popup(exercises[cursor])
             elif k in (curses.KEY_F1, ord('h')):
-                self.show_help()
-            elif k in (ord('q'), ord('Q')):
+                self.show_help("exercise_select") # Contextual help
+            elif k in (27, ): # ESC Key
                 return None
 
 
@@ -1079,7 +1128,7 @@ class UIManager:
                         self.stdscr.attroff(curses.color_pair(2))
                     else:
                         self.stdscr.addstr(y, 2, disp[:max_x-4])
-            self.show_footer("↑/↓: Move | Enter: Select | Q: Back", 3)
+            self.show_footer("↑/↓: Move | Enter: Select | Esc: Back", 3) # Changed Q to Esc
             self.stdscr.refresh()
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')):
@@ -1091,7 +1140,7 @@ class UIManager:
             elif k in (10, 13):
                 self.dm.logger.debug("Template selected: %s", templates[cursor].title)
                 return templates[cursor]
-            elif k in (ord('q'), ord('Q')):
+            elif k in (27, ): # ESC Key
                 return None
 
     def start_session_from_template(self) -> None:
@@ -1105,7 +1154,7 @@ class UIManager:
             self.pause()
             return
         flash_message(self.stdscr, f"Starting session from template '{tmpl.title}'")
-        self.pause("Press any key to continue...")
+        # self.pause("Press any key to continue...")
         self.dm.logger.info("Starting session from template: %s", tmpl.title)
         self.record_session(prepopulated=tmpl_exercises)
 
@@ -1166,7 +1215,7 @@ class UIManager:
             for idx, ex in enumerate(edited_exercises, start=1):
                 self.stdscr.addstr(3 + idx, 6, f"{idx}. {ex.title}")
             # Show interactive options
-            self.show_footer("A: Add, R: Remove, D: Done", 3)
+            self.show_footer("A: Add, R: Remove, D: Done, Esc: Back", 3) # Added Esc
             self.stdscr.refresh()
             ch = self.stdscr.getch()
             if ch in (ord('a'), ord('A')):
@@ -1189,6 +1238,8 @@ class UIManager:
                     flash_message(self.stdscr, "Invalid input.")
             elif ch in (ord('d'), ord('D')):
                 break
+            elif ch in (27, ): # ESC Key
+                return
 
         self.dm.update_template(tmpl.filename, new_name, new_desc, edited_exercises)
         flash_message(self.stdscr, f"Template '{new_name}' updated.")
@@ -1233,33 +1284,76 @@ class UIManager:
         cursor = 0
         while True:
             self.clear_screen()
-            self.draw_header("Select an Exercise to Edit")
+            self.draw_header("Edit Exercise (Inline)")
             max_y, max_x = self.stdscr.getmaxyx()
+
+            #--- Display in a table-like format ---
+            headers = ["Title", "Equipment", "Planned"]
+            col_widths = [max_x - 40, 25, 7]  # Adjust as needed
+            header_line = "  ".join(f"{h:<{w}}" for h, w in zip(headers, col_widths))
+            self.stdscr.attron(curses.A_BOLD | curses.color_pair(3))
+            self.stdscr.addstr(2, 2, header_line[:max_x - 4])
+            self.stdscr.attroff(curses.A_BOLD | curses.color_pair(3))
+
+
             for idx, ex in enumerate(exercises):
-                line = f"{ex.title} (Equipment: {', '.join(ex.equipment)})"
+                y = 3 + idx
+                # Display with columns
+                title_str = f"{ex.title:<{col_widths[0]}}"
+                equipment_str = f"{', '.join(ex.equipment):<{col_widths[1]}}"
+                planned_str = f"{'Yes' if ex.planned else 'No':<{col_widths[2]}}"
+                line = f"{title_str}  {equipment_str}  {planned_str}"
+
                 if idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
-                    self.stdscr.addstr(3+idx, 2, line[:max_x-4])
+                    self.stdscr.addstr(y, 2, line[:max_x - 4])
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
-                    self.stdscr.addstr(3+idx, 2, line[:max_x-4])
-            self.show_footer("↑/↓: Move | Enter: Edit | Q: Cancel", 3)
+                    self.stdscr.addstr(y, 2, line[:max_x - 4])
+
+            hint = "↑/↓: Move | Enter: Edit | T: Toggle Planned | D: Delete | Esc: Back" # Add 'T' for Toggle, 'D' for Delete
+            self.show_footer(hint, 3)
             self.stdscr.refresh()
+
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')) and cursor > 0:
                 cursor -= 1
             elif k in (curses.KEY_DOWN, ord('j')) and cursor < len(exercises) - 1:
                 cursor += 1
-            elif k in (10, 13):
+            elif k in (10, 13):  # Enter
                 ex = exercises[cursor]
-                new_title = self.prompt_input(f"New title [{ex.title}]: ", 2, 2, ex.title)
-                new_equipment = self.prompt_input(f"New equipment (comma separated) [{', '.join(ex.equipment)}]: ", 3, 2, ", ".join(ex.equipment))
-                self.dm.edit_exercise(ex.filename, new_title, new_equipment)
-                flash_message(self.stdscr, "Exercise updated.")
-                self.pause("Press any key to return to main menu...")
+                # Inline editing using a helper function.
+                self.inline_edit_exercise(ex)
+            elif k in (ord('t'), ord('T')): # Toggle Planned
+                ex = exercises[cursor]
+                new_state = self.dm.toggle_exercise_planned(ex.filename)
+                ex.planned = new_state # Update local cache
+                flash_message(self.stdscr, f"'{ex.title}' planned status toggled.")
+            elif k in (ord('d'), ord('D')):
+                ex = exercises[cursor]
+                if modal_confirm(self.stdscr, f"Delete exercise '{ex.title}'?"):
+                    self.dm.delete_exercise(ex.filename)
+                    exercises.pop(cursor) # Remove from local list.
+                    flash_message(self.stdscr, "Exercise deleted.")
+                    if cursor >= len(exercises) and cursor > 0:
+                        cursor -= 1 # Adjust cursor if we deleted the last item
+            elif k in (27,): # Esc
                 break
-            elif k in (ord('q'), ord('Q')):
-                break
+
+    def inline_edit_exercise(self, exercise: Exercise) -> None:
+        """Helper function for inline editing of an exercise."""
+        max_y, max_x = self.stdscr.getmaxyx()
+        edit_win = curses.newwin(5, max_x - 4, 2, 2) # Window for input
+        draw_box(edit_win, "Edit Exercise")
+        edit_win.refresh()
+
+        new_title = self.prompt_input(f"Title [{exercise.title}]: ", 3, 4, exercise.title, edit_win)
+        new_equipment = self.prompt_input(f"Equipment (comma separated) [{', '.join(exercise.equipment)}]: ", 4, 4, ", ".join(exercise.equipment), edit_win)
+        self.dm.edit_exercise(exercise.filename, new_title, new_equipment)
+        exercise.title = new_title  # Update the *local* Exercise object.
+        exercise.equipment = [item.strip() for item in new_equipment.split(",") if item.strip()] or ["none"]
+        flash_message(self.stdscr, "Exercise updated.")
+
 
     def delete_exercise_ui(self) -> None:
         exercises = self.dm.load_exercises()
@@ -1270,7 +1364,7 @@ class UIManager:
         cursor = 0
         while True:
             self.clear_screen()
-            self.draw_header("Select an Exercise to Delete")
+            self.draw_header("Delete an Exercise")
             max_y, max_x = self.stdscr.getmaxyx()
             for idx, ex in enumerate(exercises):
                 line = f"{ex.title}"
@@ -1280,7 +1374,7 @@ class UIManager:
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
                     self.stdscr.addstr(3+idx, 2, line[:max_x-4])
-            self.show_footer("↑/↓: Move | Enter: Delete | Q: Cancel", 3)
+            self.show_footer("↑/↓: Move | Enter: Delete | Esc: Back", 3) # Changed Q to Esc
             self.stdscr.refresh()
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')) and cursor > 0:
@@ -1292,13 +1386,14 @@ class UIManager:
                 if modal_confirm(self.stdscr, f"Delete exercise '{ex.title}'?"):
                     self.dm.delete_exercise(ex.filename)
                     flash_message(self.stdscr, "Exercise deleted.")
-                    self.pause("Press any key to return to main menu...")
-                    break
+                    exercises.pop(cursor) # Remove from local list
+                    if cursor >= len(exercises) and cursor > 0:
+                        cursor -= 1 # Adjust cursor if we deleted the last item
+                    # No break, stay in delete screen to allow deleting multiple.
                 else:
                     flash_message(self.stdscr, "Deletion cancelled.")
                     self.pause("Press any key...")
-                    break
-            elif k in (ord('q'), ord('Q')):
+            elif k in (27, ): # ESC Key
                 break
 
     def view_history(self) -> None:
@@ -1314,18 +1409,33 @@ class UIManager:
             self.draw_header("Workout History (F: Filter)")
             max_y, max_x = self.stdscr.getmaxyx()
             list_h = max_y - 8
+
+            # --- Table-like display ---
+            headers = ["Date", "Title", "Exercises"]
+            col_widths = [12, max_x - 26, 10] # Adjust as needed
+            header_line = "  ".join(f"{h:<{w}}" for h, w in zip(headers, col_widths))
+            self.stdscr.attron(curses.A_BOLD | curses.color_pair(3))
+            self.stdscr.addstr(2, 2, header_line[:max_x-4])
+            self.stdscr.attroff(curses.A_BOLD | curses.color_pair(3))
+
             for idx, session in enumerate(filtered_sessions[:list_h]):
-                line = f"{session.date} - {session.title}"
                 y = 3 + idx
+                date_str = f"{session.date:<{col_widths[0]}}"
+                title_str = f"{session.title:<{col_widths[1]}}"
+                exercises_count_str = f"{len(session.exercises):<{col_widths[2]}}" # Number of exercises.
+                line = f"{date_str}  {title_str}  {exercises_count_str}"
+
                 if idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
-                    self.stdscr.addstr(y, 2, line[:max_x-4])
+                    self.stdscr.addstr(y, 2, line[:max_x - 4])
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
-                    self.stdscr.addstr(y, 2, line[:max_x-4])
-            hint = "↑/↓: Move | Enter: View Details | F: Filter | Q: Back"
+                    self.stdscr.addstr(y, 2, line[:max_x - 4])
+
+            hint = "↑/↓: Move | Enter: Details | F: Filter | F1: Help | Esc: Back" # Changed Q to Esc, Added F1
             self.show_footer(hint, 3)
             self.stdscr.refresh()
+            # ... (rest of your key handling logic, including filtering)
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')) and cursor > 0:
                 cursor -= 1
@@ -1334,14 +1444,17 @@ class UIManager:
             elif k in (10, 13):
                 self.show_session_details(filtered_sessions[cursor])
             elif k in (ord('f'), ord('F')):
-                keyword = self.prompt_input("Filter sessions by exercise title: ", 2, 2)
+                keyword = self.prompt_input("Filter by exercise: ", 2, 2)
                 if keyword:
                     all_ex = self.dm.load_exercises()
-                    filtered_sessions = [s for s in sessions if any(keyword.lower() in next((e.title for e in all_ex if e.filename == ex.id), "").lower() for ex in s.exercises)]
-                    cursor = 0
+                    # Filter by exercise *title* (more user-friendly than filename)
+                    filtered_sessions = [s for s in sessions if any(keyword.lower() in next((e.title for e in all_ex if e.filename == ex.id), ex.id).lower() for ex in s.exercises)]
+                    cursor = 0  # Reset cursor
                 else:
-                    filtered_sessions = sessions
-            elif k in (ord('q'), ord('Q')):
+                    filtered_sessions = sessions  # Reset filter
+            elif k in (curses.KEY_F1, ord('h')):
+                self.show_help("history_view") # Contextual help
+            elif k in (27, ):  # Esc
                 break
 
     def show_session_details(self, session: WorkoutSession) -> None:
@@ -1405,8 +1518,7 @@ class UIManager:
                 break
 
         self.clear_screen()
-        self.draw_header("Select an Exercise (or / to search)")
-
+        self.draw_header("Workout History (F: Filter)") # Go back to history list
 
 
     def delete_session_ui(self) -> None:
@@ -1418,7 +1530,7 @@ class UIManager:
         cursor = 0
         while True:
             self.clear_screen()
-            self.draw_header("Select a Session to Delete")
+            self.draw_header("Delete a Session")
             max_y, max_x = self.stdscr.getmaxyx()
             for idx, session in enumerate(sessions):
                 line = f"{session.date} - {session.title}"
@@ -1428,7 +1540,7 @@ class UIManager:
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
                     self.stdscr.addstr(3+idx, 2, line[:max_x-4])
-            self.show_footer("↑/↓: Move | Enter: Delete | Q: Cancel", 3)
+            self.show_footer("↑/↓: Move | Enter: Delete | Esc: Back", 3) # Changed Q to Esc
             self.stdscr.refresh()
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')) and cursor > 0:
@@ -1440,9 +1552,14 @@ class UIManager:
                 if modal_confirm(self.stdscr, f"Delete session '{sess.title}'?"):
                     self.dm.delete_workout_session(sess.filename)
                     flash_message(self.stdscr, "Session deleted.")
-                    self.pause("Press any key to return to main menu...")
-                    break
-            elif k in (ord('q'), ord('Q')):
+                    sessions.pop(cursor) # Remove from local list
+                    if cursor >= len(sessions) and cursor > 0:
+                        cursor -= 1 # Adjust cursor if we deleted the last item
+                    # No break, stay in delete screen to allow deleting multiple.
+                else:
+                    flash_message(self.stdscr, "Deletion cancelled.")
+                    self.pause("Press any key...")
+            elif k in (27, ): # ESC Key
                 break
 
     def view_statistics(self) -> None:
@@ -1487,39 +1604,27 @@ class UIManager:
         self.pause("Press any key to return to main menu...")
         self.dm.logger.info("Workout history exported to: %s", export_path)
 
-    def main_menu(self) -> None:
-        menu_options = [
-            ("Record a Workout Session", self.record_session),
-            ("Add to Most Recent Workout", self.add_to_recent_workout),
-            ("View Workout History", self.view_history),
-            ("Delete a Workout Session", self.delete_session_ui),
-            ("Create a New Exercise", self.add_new_exercise),
-            ("Edit an Exercise", self.edit_exercise_ui),
-            ("Delete an Exercise", self.delete_exercise_ui),
-            ("Create Workout Template", self.create_template),
-            ("Start Workout from Template", self.start_session_from_template),
-            ("Edit Workout Template", self.edit_template),
-            ("Delete Workout Template", self.delete_template_ui),
-            ("Export Workout History", self.export_history_ui),
-            ("View Statistics", self.view_statistics),
-            ("Backup Data", self.backup_data_ui),
-            ("About", self.show_help),
-            ("Help", self.show_help),
-            ("Quit", None),
-        ]
+    def navigate_menu(self, menu_options: List[Any], title: str, breadcrumb: str = "") -> None:
+        """Handles navigation through hierarchical menus."""
         cursor = 0
         while True:
             self.clear_screen()
-            self.draw_header("Ultimate Workout Logger – Main Menu")
-            for idx, (option, _) in enumerate(menu_options):
-                y = 3 + idx 
+            self.draw_header(f"{title} – {breadcrumb}" if breadcrumb else title) # Breadcrumb
+            for idx, option in enumerate(menu_options):
+                y = 3 + idx
+                if isinstance(option, tuple):  # Regular menu item
+                    label = option[0]
+                    action = option[1]
+                else:  # Submenu
+                    label = option[0] + "..."  # Indicate submenu
+                    action = None  # No direct action
                 if idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
-                    self.stdscr.addstr(y, 4, f"> {option}")
+                    self.stdscr.addstr(y, 4, f"> {label}")
                     self.stdscr.attroff(curses.color_pair(2))
                 else:
-                    self.stdscr.addstr(y, 4, f"  {option}")
-            hint = "↑/↓: Move | Enter: Select | Q: Quit | F1: Help"
+                    self.stdscr.addstr(y, 4, f"  {label}")
+            hint = "↑/↓: Move | Enter: Select | Esc: Back | Q: Quit | F1: Help"
             self.show_footer(hint, 3)
             self.stdscr.refresh()
             k = self.stdscr.getch()
@@ -1527,16 +1632,61 @@ class UIManager:
                 cursor = max(0, cursor - 1)
             elif k in (curses.KEY_DOWN, ord('j')):
                 cursor = min(len(menu_options) - 1, cursor + 1)
-            elif k in (10, 13):
-                if menu_options[cursor][1] is None or menu_options[cursor][0] == "Quit":
-                    self.dm.logger.info("Exiting workout logger.")
-                    break
-                menu_options[cursor][1]()
+            elif k in (10, 13):  # Enter key
+                selected_option = menu_options[cursor]
+                if isinstance(selected_option, tuple): # Regular Option
+                    if selected_option[1] is None: # Quit
+                        return
+                    elif isinstance(selected_option[1], list): # Submenu
+                        new_breadcrumb = f"{breadcrumb} > {selected_option[0]}" if breadcrumb else selected_option[0]
+                        self.navigate_menu(selected_option[1], title, new_breadcrumb)
+                    elif callable(selected_option[1]): # Action function
+                        selected_option[1]() # Execute
+                    else:
+                        self.dm.logger.error(f"Unexpected menu option type: {selected_option}") # Log unexpected type for debugging
+                else: # Should not happen based on menu structure, but for robustness
+                    self.dm.logger.error(f"Unexpected menu option format: {selected_option}") # Log unexpected format for debugging
+            elif k in (27,):  # ESC key
+                return  # Go back one level
             elif k in (ord('q'), ord('Q')):
-                self.dm.logger.info("User requested exit from main menu.")
-                break
+                if modal_confirm(self.stdscr, "Are you sure you want to quit?"): # Consistent Confirmation
+                    return
             elif k in (curses.KEY_F1, ord('h')):
                 self.show_help()
+
+    def main_menu(self) -> None:
+        menu_options = [
+            ("Record Workout", [
+                ("Start New Session", self.record_session),
+                ("Resume Recent Session", self.add_to_recent_workout),
+                ("Start from Template", self.start_session_from_template),
+            ]),
+            ("Manage Exercises", [
+                ("Create New", self.add_new_exercise),
+                ("Edit Existing", self.edit_exercise_ui),
+                ("Delete", self.delete_exercise_ui),
+            ]),
+            ("Manage Templates", [
+                ("Create New", self.create_template),
+                ("Edit Existing", self.edit_template),
+                ("Delete", self.delete_template_ui),
+            ]),
+            ("View History & Stats", [
+                ("View History", self.view_history),
+                ("View Statistics", self.view_statistics),
+                ("Export Data", self.export_history_ui),
+            ]),
+            ("Settings & Data", [
+                ("Backup Data", self.backup_data_ui),
+            ]),
+            ("About & Help", [  # Keep these together
+                ("About", self.show_help),
+                ("Help", lambda: self.show_help("main")), # Context for main menu help
+            ]),
+            ("Quit", None),
+        ]
+        self.navigate_menu(menu_options, "Ultimate Workout Logger")
+
 
 # --- Main Entrypoint ---
 def main(stdscr: Any) -> None:
@@ -1600,4 +1750,3 @@ if __name__ == "__main__":
         logging.getLogger(__name__).exception("Critical error in Ultimate Workout Logger")
         print("An error occurred. Please check the log file for details.")
         sys.exit(1)
-
