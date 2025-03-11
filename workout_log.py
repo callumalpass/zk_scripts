@@ -1592,17 +1592,18 @@ class UIManager:
             self.show_footer("No past sessions found.", 3)
             self.pause()
             return
+
         filtered_sessions = sessions
         cursor = 0
         while True:
             self.clear_screen()
             self.draw_header("Workout History (F: Filter)")
             max_y, max_x = self.stdscr.getmaxyx()
-            list_h = max_y - 8
+            list_h = max_y - 8  # Height available for the list
 
-            # --- Table-like display ---
-            headers = ["Date", "Title", "Exercises"]
-            col_widths = [12, max_x - 26, 10] # Adjust as needed
+            # --- Table-like display (with Sets) ---
+            headers = ["Date", "Title", "Exercises", "Sets"] # Added "Sets"
+            col_widths = [12, max_x - 38, 10, 8]  # Adjusted widths
             header_line = "  ".join(f"{h:<{w}}" for h, w in zip(headers, col_widths))
             self.stdscr.attron(curses.A_BOLD | curses.color_pair(3))
             self.stdscr.addstr(2, 2, header_line[:max_x-4])
@@ -1612,8 +1613,13 @@ class UIManager:
                 y = 3 + idx
                 date_str = f"{session.date:<{col_widths[0]}}"
                 title_str = f"{session.title:<{col_widths[1]}}"
-                exercises_count_str = f"{len(session.exercises):<{col_widths[2]}}" # Number of exercises.
-                line = f"{date_str}  {title_str}  {exercises_count_str}"
+                exercises_count_str = f"{len(session.exercises):<{col_widths[2]}}"
+
+                # Calculate total sets for the session
+                total_sets = sum(len(ex.sets) for ex in session.exercises)
+                sets_str = f"{total_sets:<{col_widths[3]}}"
+
+                line = f"{date_str}  {title_str}  {exercises_count_str}  {sets_str}"
 
                 if idx == cursor:
                     self.stdscr.attron(curses.color_pair(2))
@@ -1622,10 +1628,10 @@ class UIManager:
                 else:
                     self.stdscr.addstr(y, 2, line[:max_x - 4])
 
-            hint = "↑/↓: Move | Enter: Details | R: Resume | F: Filter | F1: Help | Esc: Back" # Changed Q to Esc, Added F1
+            hint = "↑/↓: Move | Enter: Details | R: Resume | F: Filter | F1: Help | Esc: Back"
             self.show_footer(hint, 3)
             self.stdscr.refresh()
-            # ... (rest of your key handling logic, including filtering)
+
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')) and cursor > 0:
                 cursor -= 1
@@ -1634,20 +1640,19 @@ class UIManager:
             elif k in (10, 13):
                 self.show_session_details(filtered_sessions[cursor])
             elif k in (ord('r'), ord('R')):
-              self.add_to_recent_workout(filtered_sessions[cursor].filename)
-              break;
+                self.add_to_recent_workout(filtered_sessions[cursor].filename)
+                break
             elif k in (ord('f'), ord('F')):
                 keyword = self.prompt_input("Filter by exercise: ", 2, 2)
                 if keyword:
                     all_ex = self.dm.load_exercises()
-                    # Filter by exercise *title* (more user-friendly than filename)
                     filtered_sessions = [s for s in sessions if any(keyword.lower() in next((e.title for e in all_ex if e.filename == ex.id), ex.id).lower() for ex in s.exercises)]
-                    cursor = 0  # Reset cursor
+                    cursor = 0
                 else:
-                    filtered_sessions = sessions  # Reset filter
+                    filtered_sessions = sessions
             elif k in (curses.KEY_F1, ord('h')):
-                self.show_help("history_view") # Contextual help
-            elif k in (27, ):  # Esc
+                self.show_help("history_view")
+            elif k in (27,):
                 break
 
     def show_session_details(self, session: WorkoutSession) -> None:
