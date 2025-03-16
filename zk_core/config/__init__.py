@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, validator
 
 from zk_core.constants import (
     DEFAULT_CONFIG_PATH, DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME, 
-    DEFAULT_LOG_LEVEL, DEFAULT_FILENAME_FORMAT, DEFAULT_FILENAME_EXTENSION
+    DEFAULT_LOG_LEVEL, DEFAULT_FILENAME_FORMAT, DEFAULT_FILENAME_EXTENSION,
+    DEFAULT_NVIM_SOCKET
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class FilenameConfig(BaseModel):
 class ZKConfig(BaseModel):
     """Main configuration model."""
     notes_dir: str = Field(default=DEFAULT_NOTES_DIR, description="Path to notes directory")
+    socket_path: str = Field(default=DEFAULT_NVIM_SOCKET, description="Path to Neovim socket")
     zk_index: IndexConfig = Field(default_factory=IndexConfig, description="Index configuration")
     query: QueryConfig = Field(default_factory=QueryConfig, description="Query configuration")
     logging: LoggingConfig = Field(default_factory=LoggingConfig, description="Logging configuration")
@@ -79,9 +81,9 @@ class ZKConfig(BaseModel):
     
     # Additional configuration sections can be added here
     
-    @validator('notes_dir')
-    def resolve_notes_dir(cls, v: str) -> str:
-        """Resolve notes directory path."""
+    @validator('notes_dir', 'socket_path')
+    def resolve_paths(cls, v: str) -> str:
+        """Resolve paths with environment variables and user home."""
         return resolve_path(v)
 
 def create_default_config(config_file: Path) -> Dict[str, Any]:

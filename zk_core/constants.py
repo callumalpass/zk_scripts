@@ -17,6 +17,7 @@ DEFAULT_CONFIG_PATH = "~/.config/zk_scripts/config.yaml"
 DEFAULT_NOTES_DIR = "~/notes"
 DEFAULT_INDEX_FILENAME = "index.json"
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_NVIM_SOCKET = "/tmp/obsidian.sock"
 
 # Filename format constants
 DEFAULT_FILENAME_FORMAT = "%y%m%d{random:3}"

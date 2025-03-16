@@ -2,6 +2,7 @@
 
 # Main configuration
 notes_dir: "~/notes"  # Path to your notes directory
+socket_path: "/tmp/obsidian.sock"  # Path to Neovim socket for editor integration
 
 # Index configuration
 zk_index:
@@ -27,8 +28,8 @@ working_mem:
 
 # Backlinks configuration
 backlinks:
-  notes_dir: "~/notes"
-  bat_theme: "Dracula"
+  notes_dir: "~/notes"  # This is redundant with the global notes_dir, kept for backward compatibility
+  bat_theme: "Dracula"  # Theme for bat preview
 
 # Bibliography configuration
 bibview:

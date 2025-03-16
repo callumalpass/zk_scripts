@@ -15,13 +15,14 @@ import yaml
 
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.fzf_manager import FzfManager, FzfBinding
+from zk_core.constants import DEFAULT_NVIM_SOCKET
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
 def build_fzf_manager(templink: str, notes_dir: str, index_file: str,
-                     notes_diary_subdir: str, bat_theme: str) -> FzfManager:
+                     notes_diary_subdir: str, bat_theme: str, socket_path: str) -> FzfManager:
     """
     Create and configure a FzfManager with all the bindings for the ZK interface.
     
@@ -42,8 +43,8 @@ def build_fzf_manager(templink: str, notes_dir: str, index_file: str,
     manager.add_bindings([
         FzfBinding(
             key="Enter",
-            command=f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {notes_dir}/{{+1}}.md]+abort",
-            description="Open the selected note in nvim (via the obsidian socket).",
+            command=f"Enter:execute[nvim --server {socket_path} --remote {notes_dir}/{{+1}}.md]+abort",
+            description="Open the selected note in nvim (via the configured socket).",
             category="Navigation"
         ),
         FzfBinding(
@@ -248,6 +249,7 @@ def main() -> None:
     parser.add_argument("--list-hotkeys", action="store_true",
                         help="Print a list of available fzf hotkeys and their functions, then exit.")
     parser.add_argument("--config-file", help="Specify config file path")
+    parser.add_argument("--socket-path", help="Specify custom Neovim socket path")
     args = parser.parse_args()
 
     # Load configuration
@@ -270,6 +272,15 @@ def main() -> None:
     notes_diary_subdir = get_config_value(config, "fzf_interface.diary_subdir", "")
     
     bat_theme = get_config_value(config, "fzf_interface.bat_theme", "default")
+    
+    # Get socket path from (in order of precedence):
+    # 1. Command line argument
+    # 2. Global configuration
+    # 3. Environment variable
+    # 4. Default value
+    socket_path = args.socket_path if args.socket_path else get_config_value(
+        config, "socket_path", os.getenv("NVIM_SOCKET", DEFAULT_NVIM_SOCKET)
+    )
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -277,6 +288,7 @@ def main() -> None:
         logger.debug("INDEX_FILE = %s", index_file)
         logger.debug("PY_ZK = %s", py_zk)
         logger.debug("ZK_INDEX_SCRIPT = %s", zk_index_script)
+        logger.debug("SOCKET_PATH = %s", socket_path)
 
     try:
         os.chdir(notes_dir)
@@ -292,7 +304,7 @@ def main() -> None:
     # Build the fzf manager with all bindings
     fzf_manager = build_fzf_manager(
         templink, notes_dir, index_file,
-        notes_diary_subdir, bat_theme
+        notes_diary_subdir, bat_theme, socket_path
     )
     
     if args.list_hotkeys:

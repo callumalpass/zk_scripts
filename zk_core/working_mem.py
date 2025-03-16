@@ -25,6 +25,7 @@ import yaml
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.utils import extract_frontmatter_and_body, generate_filename
 from zk_core.query import app as query_app
+from zk_core.constants import DEFAULT_NVIM_SOCKET
 
 # ANSI Colors for UI
 RED = "\033[31m"
@@ -447,7 +448,11 @@ def main() -> None:
 
     if use_nvim:
         # Use the current Neovim buffer
-        socket_path = os.getenv("NVIM_SOCKET", "/tmp/obsidian.sock")
+        # Get socket path from (in order of precedence):
+        # 1. Configuration
+        # 2. Environment variable
+        # 3. Default value
+        socket_path = get_config_value(config, "socket_path", os.getenv("NVIM_SOCKET", DEFAULT_NVIM_SOCKET))
         note_content, file_name, nvim_instance = get_nvim_buffer_content(socket_path)
         if not note_content.strip():
             print(f"{YELLOW}No content in the current Neovim buffer. Nothing to save.{NC}")
