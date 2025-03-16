@@ -84,9 +84,111 @@ class ZKConfig(BaseModel):
         """Resolve notes directory path."""
         return resolve_path(v)
 
+def create_default_config(config_file: Path) -> Dict[str, Any]:
+    """
+    Create a default configuration file.
+    
+    Args:
+        config_file: Path to the config file to create.
+        
+    Returns:
+        Dict with default configuration values.
+    """
+    # Create default configuration
+    default_config = ZKConfig()
+    config_dict = default_config.dict()
+    
+    # Add additional configuration sections that aren't in the core ZKConfig
+    config_dict.update({
+        "fzf_interface": {
+            "bat_command": "bat",
+            "fzf_args": "--height=80% --layout=reverse --info=inline",
+            "diary_subdir": "",
+            "bat_theme": "default"
+        },
+        "working_mem": {
+            "file": os.path.join(DEFAULT_NOTES_DIR, "workingMem.md"),
+            "template_path": os.path.join(DEFAULT_NOTES_DIR, "templates/working_mem.md"),
+            "editor": "nvim",
+            "tag": "working_mem"
+        },
+        "backlinks": {
+            "notes_dir": DEFAULT_NOTES_DIR,
+            "bat_theme": "Dracula"
+        },
+        "bibview": {
+            "bibliography_json": "~/bibliography.json",
+            "bibhist": "~/.bibhist",
+            "library": "~/biblib",
+            "notes_dir_for_zk": DEFAULT_NOTES_DIR,
+            "bat_theme": "Dracula",
+            "bibview_open_doc_script": "~/bin/open_doc.sh",
+            "llm_path": "~/bin/llm",
+            "zk_script": "~/bin/zk",
+            "link_zathura_tmp_script": "~/bin/link_zathura.sh",
+            "obsidian_socket": "/tmp/obsidiansocket",
+            "getbibkeys_script": "~/bin/getbibkeys.sh"
+        },
+        "personSearch": {
+            "notes_dir": DEFAULT_NOTES_DIR,
+            "bat_command": "bat"
+        }
+    })
+    
+    # Ensure parent directory exists
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    
+    # Create friendly config file with description
+    config_description = """# ZK Scripts Configuration
+# 
+# This configuration file was automatically generated with default values.
+# You can modify these values to customize the behavior of zk_scripts.
+#
+# Main configuration sections:
+#
+# notes_dir: Path to your notes directory (default: ~/notes)
+#
+# zk_index:
+#   - Settings for the indexing system (excluded directories, index filename)
+#
+# query:
+#   - Settings for the query tool (default fields, output format)
+#
+# filename:
+#   - Settings for generated filenames (format, extension)
+#
+# fzf_interface:
+#   - Settings for the fuzzy finder interface
+#
+# working_mem:
+#   - Settings for the working memory feature
+#
+# backlinks:
+#   - Settings for the backlinks viewer
+#
+# bibview:
+#   - Settings for bibliography integration
+#
+# personSearch:
+#   - Settings for person search functionality
+#
+# logging:
+#   - Logging settings (level, file path)
+#
+"""
+    
+    # Write configuration to file with description
+    with open(config_file, 'w', encoding='utf-8') as f:
+        f.write(config_description)
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+    
+    logger.info(f"Created default configuration file at {config_file}")
+    return config_dict
+
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Load configuration from the YAML config file.
+    If the config file doesn't exist, create it with default values.
     
     Args:
         config_path: Path to the config file. If None, default is used.
@@ -101,7 +203,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         # Resolve the path to expand ~ to home directory
         resolved_path = resolve_path(path)
         config_file = Path(resolved_path)
+        
         if config_file.exists():
+            # Load existing configuration
             with open(config_file, 'r', encoding='utf-8') as f:
                 raw_config = yaml.safe_load(f) or {}
                 
@@ -111,6 +215,12 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 validated_config = ZKConfig(**raw_config)
                 # Convert back to dictionary for backward compatibility
                 config = validated_config.dict()
+                
+                # Preserve any additional sections not covered by ZKConfig
+                for key, value in raw_config.items():
+                    if key not in config:
+                        config[key] = value
+                
                 logger.debug(f"Loaded and validated configuration from {resolved_path}")
             except Exception as validation_error:
                 logger.error(f"Configuration validation error: {validation_error}")
@@ -118,9 +228,13 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 # Use as much of the config as possible
                 config = raw_config
         else:
-            logger.warning(f"Config file '{resolved_path}' not found. Using defaults.")
+            # Create default configuration file
+            logger.warning(f"Config file '{resolved_path}' not found. Creating with defaults.")
+            config = create_default_config(config_file)
     except Exception as e:
         logger.error(f"Error loading config file '{path}': {e}")
+        # Return minimal default config
+        config = ZKConfig().dict()
     
     return config
 
