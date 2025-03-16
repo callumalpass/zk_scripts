@@ -14,154 +14,220 @@ from typing import List, Dict, Any, Optional, Tuple
 import yaml
 
 from zk_core.config import load_config, get_config_value, resolve_path
+from zk_core.fzf_manager import FzfManager, FzfBinding
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def build_fzf_bindings(cfg: Dict[str, Any], templink: str, notes_dir: str, index_file: str,
-                      notes_diary_subdir: str, bat_theme: str, 
-                      script_path: str) -> Tuple[List[str], List[Tuple[str, str]]]:
+def build_fzf_manager(templink: str, notes_dir: str, index_file: str,
+                     notes_diary_subdir: str, bat_theme: str) -> FzfManager:
     """
-    Return a list of fzf binding strings and also a separate list of tuples
-    mapping hotkeys to a human-friendly description.
+    Create and configure a FzfManager with all the bindings for the ZK interface.
+    
+    Args:
+        templink: Path to the temporary link file
+        notes_dir: Path to the notes directory
+        index_file: Path to the index file
+        notes_diary_subdir: Subdirectory for diary notes
+        bat_theme: Theme for bat
+        
+    Returns:
+        Configured FzfManager instance
     """
-    # A list of dictionaries; each dict has:
-    #   'key': hotkey (for our help listing)
-    #   'fzf_cmd': the fzf binding string (to provide to fzf)
-    #   'desc': a human-readable description of the command
-    bindings = [
-        {
-            "key": "Enter",
-            "fzf_cmd": f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {notes_dir}/{{+1}}.md]+abort",
-            "desc": "Open the selected note in nvim (via the obsidian socket)."
-        },
-        {
-            "key": "alt-a",
-            "fzf_cmd": f"alt-a:execute[zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
-            "desc": "Run the index script and refresh the notes list."
-        },
-        {
-            "key": "alt-c",
-            "fzf_cmd": f"alt-c:execute[zk-index run]+reload:(zk-query list -i {index_file} --color always -s dateCreated --fields filename --fields title --fields tags --fields dateCreated)",
-            "desc": "Sort by creation date"
-        },
-        {
-            "key": "alt-w",
-            "fzf_cmd": f"alt-w:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --mode notes -i {notes_dir}/index.json --stdin --format-string '- [[{{filename}}|{{title}}]]' --separator='' >> workingMem.md]+reload:(zk-query list --mode notes -i {index_file} --color always)",
-            "desc": "Append selected note as a bullet to workingMem.md and refresh."
-        },
-        {
-            "key": "alt-o",
-            "fzf_cmd": f"alt-o:execute[zk-index run]+reload:(zk-query list --mode orphans -i {index_file} --color always)",
-            "desc": "Run index script and show orphan notes."
-        },
-        {
-            "key": "alt-O",
-            "fzf_cmd": f"alt-O:execute[zk-index run]+reload:(zk-query list --mode untagged-orphans -i {index_file} --color always)",
-            "desc": "Run index script and show untagged orphan notes."
-        },
-        {
-            "key": "alt-e",
-            "fzf_cmd": f"alt-e:reload:(zk-query list --mode notes -i {index_file} --color always --exclude-tag literature_note --exclude-tag person --exclude-tag task --exclude-tag diary --exclude-tag journal)",
-            "desc": "Refresh list excluding specific tags."
-        },
-        {
-            "key": "alt-y",
-            "fzf_cmd": f"alt-y:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --mode notes -i {notes_dir}/index.json --stdin --format-string '[[{{filename}}|{{title}}]]' --separator='' > {templink}]+abort",
-            "desc": "Save selected note into a temporary file and exit fzf."
-        },
-        {
-            "key": "ctrl-e",
-            "fzf_cmd": f"ctrl-e:execute[nvim {{+1}}.md ; zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
-            "desc": "Edit note in nvim then reindex and refresh."
-        },
-        {
-            "key": "ctrl-alt-r",
-            "fzf_cmd": f"ctrl-alt-r:execute[rm {{+1}}.md]+reload:(zk-query list --mode notes -i {index_file} --color always)",
-            "desc": "Delete the selected note and refresh."
-        },
-        {
-            "key": "ctrl-alt-d",
-            "fzf_cmd": f"ctrl-alt-d:execute[nvim {notes_dir}/{notes_diary_subdir}/$(date '+%Y-%m-%d' -d tomorrow).md;]",
-            "desc": "Open tomorrow's diary note in nvim."
-        },
-        {
-            "key": "alt-9",
-            "fzf_cmd": f"alt-9:reload(zk-query list --mode unique-tags -i {index_file}  --color always)+clear-query",
-            "desc": "Reload the list to show unique tags."
-        },
-        {
-            "key": "alt-1",
-            "fzf_cmd": f"alt-1:reload(rg -l {{1}} | sed 's/\\.md$//g' | zk-query list --mode notes -i {index_file} --color always --stdin)+clear-query",
-            "desc": "Search files via ripgrep and show matching notes."
-        },
-        {
-            "key": "alt-2",
-            "fzf_cmd": f"alt-2:reload( zk-query search-embeddings -i {index_file} {{1}} --k 50)+clear-query",
-            "desc": "Search notes using embeddings (k=50)."
-        },
-        {
-            "key": "alt-3",
-            "fzf_cmd": f"alt-3:reload( zk-query search-embeddings -i {index_file} --k 50 --query {{q}})+clear-query",
-            "desc": "Search notes using a freeform query with embeddings."
-        },
-        {
-            "key": "alt-8",
-            "fzf_cmd": f"alt-8:reload(zk-query list --mode notes -i {index_file} --filter-tag {{1}}  --color always)+clear-query",
-            "desc": "Reload the list filtering for a given tag."
-        },
-        {
-            "key": "?",
-            "fzf_cmd": f"?:reload(zk-query info -i {index_file} )",
-            "desc": "Display additional info for the selected note."
-        },
-        {
-            "key": "alt-?",
-            "fzf_cmd": "alt-?:toggle-preview",
-            "desc": "Toggle fzf preview window on/off."
-        },
-        {
-            "key": "alt-j",
-            "fzf_cmd": f"alt-j:reload(zk-query list --mode notes -i {index_file} --filter-tag diary --color always)",
-            "desc": "Reload list to show notes tagged 'diary'."
-        },
-        {
-            "key": "alt-g",
-            "fzf_cmd": f"alt-g:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --stdin -i {index_file} --format-string '- [[{{filename}}|{{title}}]]' >> {{1}}.md]+clear-selection",
-            "desc": "Append formatted selected note to file."
-        },
-        {
-            "key": "alt-b",
-            "fzf_cmd": f"alt-b:reload(zk-query list --mode notes -i {index_file} --filter-tag literature_note --color always)",
-            "desc": "Reload list showing notes with tag 'literature_note'."
-        },
-        {
-            "key": "ctrl-s",
-            "fzf_cmd": "ctrl-s:reload(rg -U '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\\.md//' )",
-            "desc": "Reload list sorted by modification time via ripgrep."
-        },
-        # Help hotkey
-        {
-            "key": "alt-h",
-            "fzf_cmd": f"alt-h:execute[python3 {script_path} --list-hotkeys | fzf]",
-            "desc": "Show this hotkeys help (prints the list of hotkeys)."
-        }
-    ]
+    # Create a new FzfManager instance
+    manager = FzfManager()
+    
+    # Navigation & Viewing bindings
+    manager.add_bindings([
+        FzfBinding(
+            key="Enter",
+            command=f"Enter:execute[nvim --server /tmp/obsidian.sock --remote {notes_dir}/{{+1}}.md]+abort",
+            description="Open the selected note in nvim (via the obsidian socket).",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="alt-?",
+            command="alt-?:toggle-preview",
+            description="Toggle fzf preview window on/off.",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="?",
+            command=f"?:reload(zk-query info -i {index_file} )",
+            description="Display additional info for the selected note.",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="alt-1",
+            command=f"alt-1:reload(rg -l {{1}} | sed 's/\\.md$//g' | zk-query list --mode notes -i {index_file} --color always --stdin)+clear-query",
+            description="Search files via ripgrep and show matching notes.",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="alt-2", 
+            command=f"alt-2:reload( zk-query search-embeddings -i {index_file} {{1}} --k 50)+clear-query",
+            description="Search notes using embeddings (k=50).",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="alt-3",
+            command=f"alt-3:reload( zk-query search-embeddings -i {index_file} --k 50 --query {{q}})+clear-query",
+            description="Search notes using a freeform query with embeddings.",
+            category="Navigation"
+        ),
+    ])
+    
+    # Filtering & Sorting bindings
+    manager.add_bindings([
+        FzfBinding(
+            key="alt-8",
+            command=f"alt-8:reload(zk-query list --mode notes -i {index_file} --filter-tag {{1}}  --color always)+clear-query",
+            description="Reload the list filtering for a given tag.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-9",
+            command=f"alt-9:reload(zk-query list --mode unique-tags -i {index_file}  --color always)+clear-query",
+            description="Reload the list to show unique tags.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-e",
+            command=f"alt-e:reload:(zk-query list --mode notes -i {index_file} --color always --exclude-tag literature_note --exclude-tag person --exclude-tag task --exclude-tag diary --exclude-tag journal)",
+            description="Refresh list excluding specific tags.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-b",
+            command=f"alt-b:reload(zk-query list --mode notes -i {index_file} --filter-tag literature_note --color always)",
+            description="Reload list showing notes with tag 'literature_note'.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-j",
+            command=f"alt-j:reload(zk-query list --mode notes -i {index_file} --filter-tag diary --color always)",
+            description="Reload list to show notes tagged 'diary'.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-o",
+            command=f"alt-o:execute[zk-index run]+reload:(zk-query list --mode orphans -i {index_file} --color always)",
+            description="Run index script and show orphan notes.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-O",
+            command=f"alt-O:execute[zk-index run]+reload:(zk-query list --mode untagged-orphans -i {index_file} --color always)",
+            description="Run index script and show untagged orphan notes.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="ctrl-s",
+            command="ctrl-s:reload(rg -U '^' --sortr modified --field-match-separator='::' --color=always --type md -n | sed 's/\\.md//' )",
+            description="Reload list sorted by modification time via ripgrep.",
+            category="Filtering"
+        ),
+        FzfBinding(
+            key="alt-c",
+            command=f"alt-c:execute[zk-index run]+reload:(zk-query list -i {index_file} --color always -s dateCreated --fields filename --fields title --fields tags --fields dateCreated)",
+            description="Sort by creation date",
+            category="Filtering"
+        ),
+    ])
+    
+    # Editing & Management bindings
+    manager.add_bindings([
+        FzfBinding(
+            key="ctrl-e",
+            command=f"ctrl-e:execute[nvim {{+1}}.md ; zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            description="Edit note in nvim then reindex and refresh.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="ctrl-alt-r",
+            command=f"ctrl-alt-r:execute[rm {{+1}}.md]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            description="Delete the selected note and refresh.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="ctrl-alt-d",
+            command=f"ctrl-alt-d:execute[nvim {notes_dir}/{notes_diary_subdir}/$(date '+%Y-%m-%d' -d tomorrow).md;]",
+            description="Open tomorrow's diary note in nvim.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="alt-a",
+            command=f"alt-a:execute[zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            description="Run the index script and refresh the notes list.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="alt-w",
+            command=f"alt-w:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --mode notes -i {notes_dir}/index.json --stdin --format-string '- [[{{filename}}|{{title}}]]' --separator='' >> workingMem.md]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            description="Append selected note as a bullet to workingMem.md and refresh.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="alt-y",
+            command=f"alt-y:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --mode notes -i {notes_dir}/index.json --stdin --format-string '[[{{filename}}|{{title}}]]' --separator='' > {templink}]+abort",
+            description="Save selected note into a temporary file and exit fzf.",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="alt-g",
+            command=f"alt-g:execute[echo {{+1}} | sed 's/ /\\n/g' | zk-query list --stdin -i {index_file} --format-string '- [[{{filename}}|{{title}}]]' >> {{1}}.md]+clear-selection",
+            description="Append formatted selected note to file.",
+            category="Editing"
+        ),
+    ])
+    
+    # Add help binding
+    manager.add_help_binding("zk-fzf")
+    
+    return manager
 
-    fzf_bindings = []
-    hotkeys_info = []
-    for binding in bindings:
-        fzf_bindings += ["--bind", binding["fzf_cmd"]]
-        hotkeys_info.append((binding["key"], binding["desc"]))
-    return fzf_bindings, hotkeys_info
 
-def print_hotkeys(hotkeys_info: List[Tuple[str, str]]) -> None:
-    """Print a formatted list of hotkeys and their descriptions."""
-    print("Available fzf hotkeys and their functions:")
-    for key, desc in hotkeys_info:
-        print(f"  {key:<12} : {desc}")
-    print()
+def print_hotkeys(fzf_manager: FzfManager) -> None:
+    """
+    Print a formatted list of hotkeys and their descriptions.
+    
+    Args:
+        fzf_manager: The FzfManager instance with all bindings
+    """
+    # Define the custom categories and key assignments for printing
+    custom_categories = {
+        "Navigation & Viewing": ["Enter", "alt-?", "?", "alt-1", "alt-2", "alt-3", "alt-h"],
+        "Filtering & Sorting": ["alt-8", "alt-9", "alt-e", "alt-b", "alt-j", "alt-o", "alt-O", "ctrl-s", "alt-c"],
+        "Editing & Management": ["ctrl-e", "ctrl-alt-r", "ctrl-alt-d", "alt-a", "alt-w", "alt-y", "alt-g"],
+    }
+    
+    # Override the header with ZK-specific one
+    print("\033[1;36m=== ZK-FZF KEYBOARD SHORTCUTS ===\033[0m")
+    
+    # Use the custom categories for printing
+    key_to_binding = {b.key: b for b in fzf_manager.bindings}
+    
+    for category_name, keys in custom_categories.items():
+        print(f"\n\033[1;33m{category_name}:\033[0m")
+        for key in keys:
+            if key in key_to_binding:
+                binding = key_to_binding[key]
+                print(f"  \033[1;32m{binding.key:<12}\033[0m : {binding.desc}")
+    
+    # Print any remaining keys in "Other Commands" category
+    all_categorized_keys = []
+    for keys in custom_categories.values():
+        all_categorized_keys.extend(keys)
+    
+    other_keys = [k for k in key_to_binding.keys() if k not in all_categorized_keys]
+    if other_keys:
+        print("\n\033[1;33mOther Commands:\033[0m")
+        for key in other_keys:
+            binding = key_to_binding[key]
+            print(f"  \033[1;32m{binding.key:<12}\033[0m : {binding.desc}")
+    
+    print("\n\033[1;36mPress q to exit this help screen\033[0m")
 
 def main() -> None:
     """Main entry point for the fzf interface."""
@@ -223,17 +289,14 @@ def main() -> None:
     templink = temp.name
     temp.close()
 
-    # Determine our script's full path (to use in the Alt-h binding).
-    script_path = os.path.abspath(__file__)
-
-    # Build the fzf bindings (and also the hotkeys information).
-    fzf_bindings, hotkeys_info = build_fzf_bindings(
-        {}, templink, notes_dir, index_file,
-        notes_diary_subdir, bat_theme, script_path
+    # Build the fzf manager with all bindings
+    fzf_manager = build_fzf_manager(
+        templink, notes_dir, index_file,
+        notes_diary_subdir, bat_theme
     )
     
     if args.list_hotkeys:
-        print_hotkeys(hotkeys_info)
+        print_hotkeys(fzf_manager)
         sys.exit(0)
 
     # Launch a background process that writes a notelist (unless skipped).
@@ -278,9 +341,8 @@ def main() -> None:
     if args.debug:
         logger.debug("py_zk_list_cmd = %s", " ".join(py_zk_list_cmd))
 
-    # Build the fzf command.
-    fzf_args = [
-        "fzf",
+    # Build the fzf command with additional arguments
+    additional_args = [
         "--tiebreak=chunk,begin",
         "--delimiter=::",
         "--scheme=default",
@@ -290,14 +352,18 @@ def main() -> None:
         "--multi",
         "--wrap",
     ]
-    fzf_args.extend(fzf_bindings)
     
     # Add preview command.
     preview_cmd = f"echo \"Backlinks:\"; zk-query list -i {index_file} --filter-outgoing-link {{1}} --color always; bat --theme=\"{bat_theme}\" --color=always --decorations=never {{1}}.md -H {{2}} 2> /dev/null || bat {{1}}.md"
-    fzf_args.extend(["--preview", preview_cmd,
-                    "--preview-window", "wrap:50%:<50(up)",
-                    "--color", "16",
-                    "--ansi"])
+    additional_args.extend([
+        "--preview", preview_cmd,
+        "--preview-window", "wrap:50%:<50(up)",
+        "--color", "16",
+        "--ansi"
+    ])
+    
+    # Get complete fzf arguments
+    fzf_args = fzf_manager.get_fzf_args(additional_args)
                     
     if args.debug:
         logger.debug("fzf args: %s", " ".join(fzf_args))

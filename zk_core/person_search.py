@@ -12,16 +12,59 @@ import logging
 import argparse
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.query import app as query_app
+from zk_core.fzf_manager import FzfManager, FzfBinding
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def run_command(cmd: List[str], input_text: Optional[str] = None) -> tuple[int, str, str]:
+def build_person_search_fzf_manager(notes_dir: str, bat_command: str) -> FzfManager:
+    """
+    Create and configure a FzfManager with bindings for person search.
+    
+    Args:
+        notes_dir: Path to the notes directory
+        bat_command: Command to use for previewing files
+        
+    Returns:
+        Configured FzfManager instance
+    """
+    # Create a new FzfManager instance
+    manager = FzfManager()
+    
+    # Add basic bindings
+    manager.add_bindings([
+        FzfBinding(
+            key="ctrl-e",
+            command=f"ctrl-e:execute[nvim {notes_dir}/{{1}}.md]",
+            description="Edit person note in nvim",
+            category="Editing"
+        ),
+        FzfBinding(
+            key="one",
+            command="one:accept",
+            description="Accept single selection",
+            category="Navigation"
+        ),
+        FzfBinding(
+            key="alt-?",
+            command="alt-?:toggle-preview",
+            description="Toggle preview window",
+            category="Navigation"
+        ),
+    ])
+    
+    # Add help binding
+    manager.add_help_binding("person-search")
+    
+    return manager
+
+
+def run_command(cmd: List[str], input_text: Optional[str] = None) -> Tuple[int, str, str]:
     """
     Run a command and return return code, stdout, and stderr.
     
@@ -45,10 +88,40 @@ def run_command(cmd: List[str], input_text: Optional[str] = None) -> tuple[int, 
         return 1, "", str(e)
 
 
+def print_hotkeys(fzf_manager: FzfManager) -> None:
+    """
+    Print the key bindings and their actions.
+    
+    Args:
+        fzf_manager: The FzfManager instance with all bindings
+    """
+    print("\033[1;36m=== PERSON SEARCH KEYBOARD SHORTCUTS ===\033[0m")
+    
+    # Group bindings by category
+    categories = {}
+    for binding in fzf_manager.bindings:
+        if binding.category not in categories:
+            categories[binding.category] = []
+        categories[binding.category].append(binding)
+    
+    # Print bindings by category
+    for category, bindings in sorted(categories.items()):
+        if not bindings:
+            continue
+            
+        print(f"\n\033[1;33m{category}:\033[0m")
+        for binding in sorted(bindings, key=lambda b: b.key):
+            print(f"\033[36m{binding.key:<10}\033[0m : \033[3m{binding.desc}\033[0m")
+    
+    print("\n\033[1;36mPress q to exit this help screen\033[0m")
+
+
 def main() -> None:
     """Main entry point for the person search module."""
     parser = argparse.ArgumentParser(description="Person search utility")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("--list-hotkeys", action="store_true", 
+                      help="Print a list of available fzf hotkeys and their functions, then exit")
     args = parser.parse_args()
 
     # Load configuration
@@ -67,6 +140,14 @@ def main() -> None:
         logger.setLevel(logging.DEBUG)
         logger.debug(f"Notes directory: {notes_dir}")
         logger.debug(f"bat command: {bat_command}")
+    
+    # Build the FzfManager with person search bindings
+    fzf_manager = build_person_search_fzf_manager(notes_dir, bat_command)
+    
+    # If --list-hotkeys was specified, print the hotkey help and exit
+    if args.list_hotkeys:
+        print_hotkeys(fzf_manager)
+        sys.exit(0)
     
     # Change to notes directory
     try:
@@ -109,11 +190,8 @@ def main() -> None:
         logger.error(f"Error running query command: {e}")
         sys.exit(1)
     
-    # Build fzf arguments for interactive selection
-    fzf_cmd = [
-        "fzf",
-        "--bind", f"ctrl-e:execute[nvim {notes_dir}/{{1}}.md]",
-        "--bind", "one:accept",
+    # Prepare additional fzf arguments specific to person search
+    additional_args = [
         "--delimiter", "::",
         "--with-nth", "2,3,4",
         "--tiebreak", "begin,index",
@@ -122,15 +200,17 @@ def main() -> None:
         "--preview-label", "",
         "--preview", f"{bat_command} {notes_dir}/{{1}}.md",
         "--preview-window", "wrap:50%:<40(up)",
-        "--ansi"
     ]
     
+    # Get complete fzf arguments
+    fzf_args = fzf_manager.get_fzf_args(additional_args)
+    
     if args.debug:
-        logger.debug(f"Running fzf command: {' '.join(fzf_cmd)}")
+        logger.debug(f"Running fzf command: {' '.join(fzf_args)}")
     
     try:
-        # Pipe the py_zk list output into fzf
-        fzf_result = subprocess.run(fzf_cmd, stdin=p_list.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Pipe the query results into fzf
+        fzf_result = subprocess.run(fzf_args, stdin=p_list.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         p_list.stdout.close()
     except Exception as e:
         logger.error(f"Error running fzf: {e}")
