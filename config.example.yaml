@@ -34,6 +34,7 @@ backlinks:
 # Bibliography configuration
 bibview:
   bibliography_json: "~/Dropbox/bibliography.json"  # Path to bibliography JSON
+  dropbox_bibliography_json: "~/Dropbox/bibliography.json"  # Optional additional bibliography output path
   bibhist: "~/.bibhist"  # Path to history file
   library: "~/biblib"  # Path to bibliography library
   notes_dir_for_zk: "~/notes"  # Path for Zettelkasten notes

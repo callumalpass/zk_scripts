@@ -147,6 +147,44 @@ def extract_citations(body: str) -> List[str]:
     wikilink_citations = WIKILINKED_CITATION_RE.findall(body)
     return sorted(set(inline_citations) | set(wikilink_citations))
 
+# --- Command Execution ---
+
+def run_command(cmd: List[str], input_data: Optional[str] = None, check: bool = False) -> Tuple[int, str, str]:
+    """
+    Run a command and return the return code, stdout, and stderr.
+    
+    Args:
+        cmd: Command to run as a list of strings
+        input_data: Optional string to pass as stdin
+        check: Whether to raise an exception on non-zero return code
+        
+    Returns:
+        Tuple containing (return_code, stdout, stderr)
+    """
+    try:
+        if input_data is not None:
+            proc = subprocess.run(
+                cmd, 
+                input=input_data,
+                text=True,
+                capture_output=True,
+                check=check
+            )
+        else:
+            proc = subprocess.run(
+                cmd,
+                text=True, 
+                capture_output=True,
+                check=check
+            )
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed: {' '.join(cmd)}")
+        return e.returncode, e.stdout or "", e.stderr or ""
+    except Exception as e:
+        logger.error(f"Error running command {' '.join(cmd)}: {e}")
+        return 1, "", str(e)
+
 # --- Filename Generation ---
 
 def generate_random_string(length: int) -> str:

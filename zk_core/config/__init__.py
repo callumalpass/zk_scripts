@@ -120,6 +120,7 @@ def create_default_config(config_file: Path) -> Dict[str, Any]:
         },
         "bibview": {
             "bibliography_json": "~/bibliography.json",
+            "dropbox_bibliography_json": "~/Dropbox/bibliography.json",
             "bibhist": "~/.bibhist",
             "library": "~/biblib",
             "notes_dir_for_zk": DEFAULT_NOTES_DIR,

@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.fzf_manager import FzfManager, FzfBinding
+from zk_core.utils import run_command
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -223,13 +224,17 @@ def format_bibliography_data(data: str, args: argparse.Namespace) -> str:
     
     # Use the 'column' command to format the table for a neat display
     try:
-        col_result = subprocess.run(
+        rc, stdout, stderr = run_command(
             ["column", "-s", "|", "-t", "-N", "Citekey,Year, ,Title,Authors/Editors,Abstract"],
-            input=table_str, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+            input_data=table_str
         )
-        formatted_table = col_result.stdout
+        if rc == 0:
+            formatted_table = stdout
+        else:
+            logger.warning(f"Error formatting table with column: {stderr}")
+            formatted_table = table_str
     except Exception as e:
-        logger.error(f"Error formatting table with column: {e}")
+        logger.warning(f"Exception formatting table with column: {e}")
         formatted_table = table_str
         
     if args.debug:
@@ -255,29 +260,37 @@ def main() -> None:
 
     # Set the default editor
     os.environ["EDITOR"] = "nvim"
-
+    
+    # Set logging level based on arguments
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    
     # Try to load configuration from the standard location
     config = load_config()
     
     # Get bibview specific configuration
     bibview_config = get_config_value(config, "bibview", {})
     
-    # Debug the loaded configuration
-    logger.error(f"Loaded config: {config}")
-    logger.error(f"Bibview config section: {bibview_config}")
+    # Log loaded configuration
+    logger.debug(f"Loaded config: {config}")
+    logger.debug(f"Bibview config section: {bibview_config}")
     
     # If bibview_config is empty, try to load it directly from file
     if not bibview_config:
         logger.warning("Bibview section missing in config, loading directly from file")
         try:
             import yaml
-            with open(os.path.expanduser("~/.config/zk_scripts/config.yaml"), 'r') as f:
-                direct_config = yaml.safe_load(f)
-                if direct_config and "bibview" in direct_config:
-                    bibview_config = direct_config["bibview"]
-                    logger.error(f"Direct loaded bibview config: {bibview_config}")
+            config_path = os.path.expanduser("~/.config/zk_scripts/config.yaml")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    direct_config = yaml.safe_load(f)
+                    if direct_config and "bibview" in direct_config:
+                        bibview_config = direct_config["bibview"]
+                        logger.debug(f"Direct loaded bibview config: {bibview_config}")
+            else:
+                logger.warning(f"Config file not found at {config_path}")
         except Exception as e:
-            logger.error(f"Error loading config directly: {e}")
+            logger.warning(f"Error loading config directly: {e}")
     
     # Set defaults for required values
     bib_json = get_config_value(bibview_config, "bibliography_json", "~/Dropbox/notes/biblib/bibliography.json")
@@ -304,14 +317,15 @@ def main() -> None:
     link_zathura_tmp_script = resolve_path(link_zathura_tmp_script)
     
     # Print loaded configuration values for debugging
-    logger.error(f"DEBUG - Configuration values:")
-    logger.error(f"bib_json: '{bib_json}'")
-    logger.error(f"bibhist: '{bibhist}'")
-    logger.error(f"library: '{library}'")
-    logger.error(f"notes_dir_for_zk: '{notes_dir_for_zk}'")
-    logger.error(f"bibview_open_doc_script: '{bibview_open_doc_script}'")
-    logger.error(f"zk_script: '{zk_script}'")
-    logger.error(f"link_zathura_tmp_script: '{link_zathura_tmp_script}'")
+    if args.debug:
+        logger.debug("Configuration values:")
+        logger.debug(f"bib_json: '{bib_json}'")
+        logger.debug(f"bibhist: '{bibhist}'")
+        logger.debug(f"library: '{library}'")
+        logger.debug(f"notes_dir_for_zk: '{notes_dir_for_zk}'")
+        logger.debug(f"bibview_open_doc_script: '{bibview_open_doc_script}'")
+        logger.debug(f"zk_script: '{zk_script}'")
+        logger.debug(f"link_zathura_tmp_script: '{link_zathura_tmp_script}'")
     
     # Check minimum required config values
     if not all([bib_json, bibhist, library, notes_dir_for_zk]):
@@ -334,14 +348,6 @@ def main() -> None:
         logger.warning("Zathura features will be disabled")
         # Don't fail, just disable the feature
         link_zathura_tmp_script = ""
-        
-    # Set logging level
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
-        logger.debug(f"Bibliography JSON file: {bib_json}")
-        logger.debug(f"Bibliography history file: {bibhist}")
-        logger.debug(f"Library path: {library}")
-        logger.debug(f"Notes directory: {notes_dir_for_zk}")
     
     # Build the FzfManager with all bindings
     fzf_manager = build_bibview_fzf_manager(
@@ -435,10 +441,13 @@ def main() -> None:
         logger.debug(f"Running gojq command: {' '.join(gojq_cmd)}")
         
     try:
-        jq_result = subprocess.run(gojq_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        data = jq_result.stdout
+        # Run gojq command using utils.run_command
+        rc, data, err = run_command(gojq_cmd)
+        if rc != 0:
+            logger.error(f"Error running gojq: {err}")
+            sys.exit(1)
     except Exception as e:
-        logger.error(f"Error running gojq: {e}")
+        logger.error(f"Exception running gojq: {e}")
         sys.exit(1)
         
     # Format the bibliography data
@@ -454,7 +463,7 @@ def main() -> None:
         "--info", "inline",
         "--preview", f"ls --color=always -c -l -h {library}/{{1}}/; echo '\\nCited in:' ; " + 
                    f"rg {{1}} \"{notes_dir_for_zk}\" -l --type markdown || echo 'error' ; " + 
-                   f"bat --theme=\"{bat_theme}\" ~/Dropbox/notes/@{{1}}.md 2> /dev/null "
+                   f"bat --theme=\"{bat_theme}\" {notes_dir_for_zk}/@{{1}}.md 2> /dev/null "
     ]
     
     # Get complete fzf arguments
