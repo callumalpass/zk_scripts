@@ -22,7 +22,7 @@ Originally a collection of separate scripts, ZK Core has been refactored into a 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/zk_core.git
+git clone https://github.com/callumalpass/zk_core.git
 cd zk_core
 
 # Install the package
