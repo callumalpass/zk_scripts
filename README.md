@@ -26,9 +26,9 @@ It evolved from a collection of personal scripts into this organized package.
 
 ### Limitations
 
-The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values.
+The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values. The "title" of your notes should be defined in the frontmatter; it is assumed that you are not using filenames to store titles. 
 
-There is currently no dedicated feature for the *creation* of notes from templates (except of "working memory" notes). This has been avoided under the belief that template management is better managed by other tools; e.g. snippets in `neovim`.
+There is currently no dedicated feature for the *creation* of notes from templates (except of "working memory" notes). This has been avoided under the belief that templates are better managed by other tools; e.g. snippets in `neovim`.
 
 ## Installation
 
