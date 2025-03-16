@@ -296,7 +296,11 @@ zk-working-mem --nvim      # Use content from current Neovim buffer
 
 #### Working Memory Tool in Detail
 
-The Working Memory tool (`zk-working-mem`) is designed to capture fleeting thoughts, ideas, and connections quickly, while integrating them into your Zettelkasten. It acts as a bridge between ephemeral thoughts and permanent notes.
+The Working Memory tool (`zk-working-mem`) is designed to capture fleeting thoughts, ideas, and connections quickly, while integrating them into your Zettelkasten. 
+
+This feature was built after experiencing repeated difficulties with the zettelkasten system. 
+First, I often create notes note quite sure how to title them. I'll have an idea I want to work out, and having to come up with a title before I've done the writing impedes, or adds friction, to the writing process.
+Second, I think writing is a really important tool for thinking. And the zettelkasten system doesn't necessarily encourage scrappy, exploratory writing. It seems to encourage "evergreen" notes, or at least notes that could turn into something evergreen. I found this idea stopping me from writing just to explore an idea. With the `zk-working-mem` script, you are encourage to do scrappy, "scratch" writing. You don't have to come up with a title for your notes, if they don't seem title-able. Or you can pass the note to an llm, and see what titles it might suggest. After you've created the note, a link is pasted to the 'working-mem' file, a place where you can review what you've been working on recently. 
 
 **Key Features:**
 
@@ -330,7 +334,7 @@ This creates a powerful system for:
 
 ### Backlinks
 
-`zk-backlinks` shows you which notes link to the note that you currently have open in `neovim`. You need to have a socket exposed in `neovim`. 
+`zk-backlinks` presents a TUI interface with a list of notes that link to the note that you currently have open in `neovim`. You need to have a socket exposed in `neovim`. It can also show a list of notes semantically-similar to the one that you have currently open. 
 
 ```bash
 zk-backlinks
