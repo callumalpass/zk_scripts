@@ -46,10 +46,13 @@ pip install .
 You'll need a configuration file at `~/.config/zk_scripts/config.yaml`. Here's a comprehensive example:
 
 ```yaml
+# ZK Core Example Configuration
+
 # Main configuration
 notes_dir: "~/notes"  # Path to your notes directory
+socket_path: "/tmp/obsidian.sock"  # Path to Neovim socket for editor integration
 
-# Indexing settings
+# Index configuration
 zk_index:
   index_file: "index.json"  # Name of the index file
   exclude_patterns: [".git", ".obsidian", "node_modules"]  # Directories to exclude
@@ -67,35 +70,39 @@ fzf_interface:
 
 # Working memory configuration
 working_mem:
-  file: "~/notes/workingMem.md"  # Path to working memory file
+  template_path: "~/notes/templates/working_mem.md"
   editor: "nvim"
   tag: "working_mem"
 
 # Backlinks configuration
 backlinks:
-  bat_theme: "Dracula"
+  notes_dir: "~/notes"  # This is redundant with the global notes_dir, kept for backward compatibility
+  bat_theme: "Dracula"  # Theme for bat preview
 
-# Bibliography settings
+# Bibliography configuration
 bibview:
-  bibliography_json: "~/Dropbox/bibliography.json"
-  library: "~/biblib"
-  notes_dir_for_zk: "~/notes"
-  bat_theme: "Dracula"
-  llm_path: "~/bin/llm"  # Path to LLM script (for AI-assisted features)
+  bibliography_json: "~/Dropbox/bibliography.json"  # Path to bibliography JSON
+  dropbox_bibliography_json: "~/Dropbox/bibliography.json"  # Optional additional bibliography output path
+  bibhist: "~/.bibhist"  # Path to history file
+  library: "~/notes/biblib"  # Path to bibliography pdf library
+  notes_dir_for_zk: "~/notes"  # Path for Zettelkasten notes
+  bat_theme: "Dracula"  # Theme for bat preview
+  bibview_open_doc_script: "~/bin/open_doc.sh"  # Script for opening documents
 
-# Person search settings
+# Person search configuration
 personSearch:
+  notes_dir: "~/notes"  # Path to notes directory
   bat_command: "bat"  # Command for preview
-
-# Filename configuration
-filename:
-  format: "%Y%m%d{random:3}"  # Format for generated filenames
-  extension: ".md"  # File extension for generated files
 
 # Global logging configuration
 logging:
   level: "INFO"  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   file: "~/.zk_core.log"  # Log file path
+
+# Filename configuration
+filename:
+  format: "%Y%m%d{random:3}"  # Format for generated filenames; supports strftime and {random:N}
+  extension: ".md"  # File extension for generated files
 ```
 
 ### Filename Configuration
@@ -449,16 +456,33 @@ zk_core/
 ├── utils.py
 ├── models.py
 ├── constants.py
+├── commands.py
+├── markdown.py
+├── fzf_utils.py
 ├── index.py        # Typer CLI
 ├── query.py        # Typer CLI
 ├── fzf_interface.py
+├── fzf_manager.py
 ├── working_mem.py
 ├── backlinks.py
-├── bibbuild.py
-├── bibview.py
+├── bibbuild.py     # Thin wrapper around bibliography.builder
+├── bibview.py      # Thin wrapper around bibliography.viewer
+├── bibliography/   # Bibliography package
+│   ├── __init__.py
+│   ├── builder.py
+│   └── viewer.py
 ├── person_search.py
 └── workout_log.py
 ```
+
+### Core Modules
+
+- **commands.py**: Unified command execution utilities
+- **markdown.py**: Markdown processing utilities (frontmatter, wikilinks, citations)
+- **fzf_utils.py**: Fuzzy finder interface helpers
+- **bibliography/**: Package for bibliography management (building and viewing)
+
+The project has been modularized to improve code organization, reduce duplication, and make it easier to extend with new features.
 
 ## Extending ZK Core
 

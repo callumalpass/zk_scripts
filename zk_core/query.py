@@ -25,7 +25,8 @@ import openai
 from tabulate import tabulate
 
 from zk_core.models import Note, IndexInfo
-from zk_core.config import load_config, get_config_value
+from zk_core.config import load_config, get_config_value, resolve_path
+from zk_core.constants import DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME
 from zk_core.utils import load_json_file, save_json_file
 
 # Try to import orjson for faster JSON processing
@@ -526,8 +527,9 @@ def info(
     
     # Get default index from config if not specified
     if index_file is None:
-        default_index = get_config_value(config, "query.default_index", "index.json")
-        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        default_index = get_config_value(config, "query.default_index", DEFAULT_INDEX_FILENAME)
+        notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
+        notes_dir = resolve_path(notes_dir)
         index_file = Path(os.path.join(notes_dir, default_index))
         logger.debug(f"Using default index file from config: {index_file}")
     
@@ -638,8 +640,9 @@ def list_(
     
     # Get default index from config if not specified
     if index_file is None:
-        default_index = get_config_value(config, "query.default_index", "index.json")
-        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        default_index = get_config_value(config, "query.default_index", DEFAULT_INDEX_FILENAME)
+        notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
+        notes_dir = resolve_path(notes_dir)
         index_file = Path(os.path.join(notes_dir, default_index))
         logger.debug(f"Using default index file from config: {index_file}")
     
@@ -730,8 +733,9 @@ def search_embeddings(
     
     # Get default index from config if not specified
     if index_file is None:
-        default_index = get_config_value(config, "query.default_index", "index.json")
-        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        default_index = get_config_value(config, "query.default_index", DEFAULT_INDEX_FILENAME)
+        notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
+        notes_dir = resolve_path(notes_dir)
         index_file = Path(os.path.join(notes_dir, default_index))
         logger.debug(f"Using default index file from config: {index_file}")
         

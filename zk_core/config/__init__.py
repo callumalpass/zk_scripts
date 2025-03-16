@@ -247,7 +247,7 @@ def resolve_path(path: str) -> str:
 
 def get_notes_dir(config: Dict[str, Any]) -> str:
     """Get notes directory from config or use default."""
-    notes_dir = config.get("notes_dir", DEFAULT_NOTES_DIR)
+    notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
     return resolve_path(notes_dir)
 
 def get_config_value(config: Dict[str, Any], key_path: str, default: Any = None) -> Any:

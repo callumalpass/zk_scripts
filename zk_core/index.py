@@ -38,8 +38,12 @@ from zk_core.utils import (
     load_json_file, save_json_file
 )
 
-# Default worker processes
-DEFAULT_WORKERS = 64
+# Import constants
+from zk_core.constants import (
+    DEFAULT_WORKERS,
+    DEFAULT_NOTES_DIR,
+    DEFAULT_INDEX_FILENAME
+)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -218,8 +222,8 @@ def run_indexer(
 
     config = ctx.obj.get("config", {})
 
-    notes_dir_default = os.path.expanduser("~/notes")
-    index_file_default = os.path.join(notes_dir_default, "index.json")
+    notes_dir_default = DEFAULT_NOTES_DIR
+    index_file_default = os.path.join(notes_dir_default, DEFAULT_INDEX_FILENAME)
     fd_exclude_patterns_default = ["templates/", ".zk/"]
 
     notes_dir_path = notes_dir or get_config_value(config, "notes_dir", notes_dir_default)
@@ -428,8 +432,8 @@ def regenerate_embeddings(
     """Regenerate embeddings for all notes in the index."""
     config = ctx.obj.get("config", {})
     
-    notes_dir_default = os.path.expanduser("~/notes")
-    index_file_default = os.path.join(notes_dir_default, "index.json")
+    notes_dir_default = DEFAULT_NOTES_DIR
+    index_file_default = os.path.join(notes_dir_default, DEFAULT_INDEX_FILENAME)
     
     index_file_path = index_file or get_config_value(config, "zk_index.index_file", index_file_default)
     index_file_path = resolve_path(index_file_path)
@@ -514,8 +518,8 @@ def validate_embeddings(
     """Validate that embeddings exist for all notes in the index."""
     config = ctx.obj.get("config", {})
     
-    notes_dir_default = os.path.expanduser("~/notes")
-    index_file_default = os.path.join(notes_dir_default, "index.json")
+    notes_dir_default = DEFAULT_NOTES_DIR
+    index_file_default = os.path.join(notes_dir_default, DEFAULT_INDEX_FILENAME)
     
     index_file_path = index_file or get_config_value(config, "zk_index.index_file", index_file_default)
     index_file_path = resolve_path(index_file_path)

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 from zk_core.config import load_config, get_config_value, resolve_path
+from zk_core.constants import DEFAULT_NOTES_DIR
 from zk_core.query import app as query_app
 from zk_core.fzf_manager import FzfManager, FzfBinding
 
@@ -64,28 +65,7 @@ def build_person_search_fzf_manager(notes_dir: str, bat_command: str) -> FzfMana
     return manager
 
 
-def run_command(cmd: List[str], input_text: Optional[str] = None) -> Tuple[int, str, str]:
-    """
-    Run a command and return return code, stdout, and stderr.
-    
-    Args:
-        cmd: Command to run as a list of strings
-        input_text: Optional text to pass to the command's stdin
-        
-    Returns:
-        Tuple of (return code, stdout, stderr)
-    """
-    try:
-        proc = subprocess.run(
-            cmd, 
-            input=input_text,
-            capture_output=True, 
-            text=True
-        )
-        return proc.returncode, proc.stdout, proc.stderr
-    except Exception as e:
-        logger.error(f"Error running command {' '.join(cmd)}: {e}")
-        return 1, "", str(e)
+from zk_core.commands import CommandExecutor
 
 
 def print_hotkeys(fzf_manager: FzfManager) -> None:
@@ -128,7 +108,7 @@ def main() -> None:
     config = load_config()
     
     # Get configuration values
-    notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+    notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
     notes_dir = resolve_path(notes_dir)
     
     # Get personSearch specific configuration

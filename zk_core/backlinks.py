@@ -30,7 +30,7 @@ import pynvim
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.models import Note
 from zk_core.utils import load_json_file
-from zk_core.constants import DEFAULT_NVIM_SOCKET
+from zk_core.constants import DEFAULT_NVIM_SOCKET, DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -684,12 +684,12 @@ def main() -> None:
     # Load configuration
     config = load_config(args.config_file)
     
-    # Get configuration values
-    notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+    # Get configuration values using utility functions
+    notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
     notes_dir = resolve_path(notes_dir)
     
-    index_file = get_config_value(config, "zk_index.index_file", os.path.join(notes_dir, "index.json"))
-    index_file = resolve_path(index_file)
+    from zk_core.utils import get_index_file_path
+    index_file = get_index_file_path(config, notes_dir, args)
     
     embeddings_file = os.path.join(os.path.dirname(index_file), "embeddings.json")
     
@@ -711,17 +711,9 @@ def main() -> None:
     if not os.path.exists(index_file):
         sys.exit(f"Error: Index file does not exist: {index_file}")
     
-    # Get socket path from (in order of precedence):
-    # 1. Command line argument
-    # 2. Global configuration
-    # 3. Section-specific configuration (backward compatibility)
-    # 4. Environment variable
-    # 5. Default value
-    socket_path = args.socket_path if args.socket_path else get_config_value(
-        config, "socket_path", get_config_value(
-            config, "backlinks.socket_path", os.getenv("NVIM_SOCKET", DEFAULT_NVIM_SOCKET)
-        )
-    )
+    # Get socket path using utility function for consistent handling
+    from zk_core.utils import get_socket_path
+    socket_path = get_socket_path(config, args, "backlinks")
     
     if args.debug:
         logger.debug(f"Using notes directory: {notes_dir}")

@@ -255,15 +255,12 @@ def main() -> None:
     # Load configuration
     config = load_config(args.config_file)
     
-    # Get necessary configuration values from new config structure
-    notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+    # Get necessary configuration values using utility functions
+    notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
     notes_dir = resolve_path(notes_dir)
     
-    index_file = get_config_value(config, "zk_index.index_file", "index.json")
-    # If index_file doesn't include a path, join it with notes_dir
-    if not os.path.dirname(index_file):
-        index_file = os.path.join(notes_dir, index_file)
-    index_file = resolve_path(index_file)
+    from zk_core.utils import get_index_file_path
+    index_file = get_index_file_path(config, notes_dir, args)
     
     # Use entry point script names directly
     py_zk = "zk-query"
@@ -273,14 +270,9 @@ def main() -> None:
     
     bat_theme = get_config_value(config, "fzf_interface.bat_theme", "default")
     
-    # Get socket path from (in order of precedence):
-    # 1. Command line argument
-    # 2. Global configuration
-    # 3. Environment variable
-    # 4. Default value
-    socket_path = args.socket_path if args.socket_path else get_config_value(
-        config, "socket_path", os.getenv("NVIM_SOCKET", DEFAULT_NVIM_SOCKET)
-    )
+    # Get socket path using utility function for consistent handling
+    from zk_core.utils import get_socket_path
+    socket_path = get_socket_path(config, args)
 
     if args.debug:
         logger.setLevel(logging.DEBUG)

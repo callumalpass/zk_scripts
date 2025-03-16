@@ -20,23 +20,13 @@ from zk_core.constants import (
     WIKILINK_ALL_RE,
     CITATION_ALIAS_RE,
     DEFAULT_FILENAME_FORMAT,
-    DEFAULT_FILENAME_EXTENSION
+    DEFAULT_FILENAME_EXTENSION,
+    DEFAULT_NOTES_DIR
 )
 
 logger = logging.getLogger(__name__)
 
 # --- Data Serialization ---
-
-def json_ready(data: Any) -> Any:
-    """Prepare data for JSON serialization, handling date objects."""
-    if isinstance(data, datetime.date):
-        return data.isoformat()
-    elif isinstance(data, dict):
-        return {k: json_ready(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [json_ready(item) for item in data]
-    else:
-        return data
 
 def load_json_file(file_path: Path) -> Any:
     """Load JSON data from a file."""
@@ -58,6 +48,105 @@ def save_json_file(file_path: Path, data: Any, indent: int = 2) -> bool:
         return False
 
 # --- File System Utilities ---
+
+def get_path_for_script(config: Dict[str, Any], section_key: str, script_key: str, default_path: str) -> str:
+    """
+    Get path for an external script from config with section-specific fallback.
+    
+    Args:
+        config: Configuration dictionary
+        section_key: Section name in config (e.g., "bibview")
+        script_key: Script key name (e.g., "getbibkeys_script")
+        default_path: Default path if not found in config
+        
+    Returns:
+        Resolved path to the script
+    """
+    from zk_core.config import get_config_value, resolve_path
+    
+    # Try section-specific config first
+    section = get_config_value(config, section_key, {})
+    if isinstance(section, dict) and script_key in section:
+        path = section[script_key]
+    else:
+        # Try global config
+        path = get_config_value(config, f"{section_key}.{script_key}", default_path)
+    
+    return resolve_path(path)
+
+def get_socket_path(config: Dict[str, Any], args: Any = None, section_key: Optional[str] = None) -> str:
+    """
+    Get socket path with consistent precedence:
+    1. Command line args (if provided)
+    2. Global config socket_path
+    3. Section-specific config (if section_key provided)
+    4. Environment variable
+    5. Default constant value
+    
+    Args:
+        config: Configuration dictionary
+        args: Command line args (should have socket_path attribute)
+        section_key: Optional section name for backward compatibility
+        
+    Returns:
+        Resolved socket path
+    """
+    import os
+    from zk_core.config import get_config_value, resolve_path
+    from zk_core.constants import DEFAULT_NVIM_SOCKET
+    
+    # Command line argument has highest precedence
+    if args and hasattr(args, 'socket_path') and args.socket_path:
+        socket_path = args.socket_path
+    else:
+        # Try global config
+        socket_path = get_config_value(config, "socket_path", None)
+        
+        # Try section-specific config if provided and global not found
+        if not socket_path and section_key:
+            socket_path = get_config_value(config, f"{section_key}.socket_path", None)
+            
+        # Fall back to environment variable or default
+        if not socket_path:
+            socket_path = os.getenv("NVIM_SOCKET", DEFAULT_NVIM_SOCKET)
+    
+    return resolve_path(socket_path)
+
+def get_index_file_path(config: Dict[str, Any], notes_dir: Optional[str] = None, args: Any = None) -> str:
+    """
+    Get index file path with consistent precedence:
+    1. Command line args (if provided)
+    2. Configuration
+    3. Default path based on notes_dir
+    
+    Args:
+        config: Configuration dictionary
+        notes_dir: Notes directory path (if already resolved)
+        args: Command line args (should have index_file attribute)
+        
+    Returns:
+        Resolved index file path
+    """
+    import os
+    from zk_core.config import get_config_value, resolve_path, get_notes_dir
+    from zk_core.constants import DEFAULT_INDEX_FILENAME
+    
+    # Command line argument has highest precedence
+    if args and hasattr(args, 'index_file') and args.index_file:
+        index_file = args.index_file
+    else:
+        # Try configuration
+        index_file = get_config_value(config, "zk_index.index_file", DEFAULT_INDEX_FILENAME)
+    
+    # If notes_dir not provided, get it from config
+    if notes_dir is None:
+        notes_dir = get_notes_dir(config)
+    
+    # If index_file doesn't include a path, join it with notes_dir
+    if not os.path.dirname(index_file):
+        index_file = os.path.join(notes_dir, index_file)
+    
+    return resolve_path(index_file)
 
 def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, quiet: bool = False) -> List[str]:
     """Recursively scan a directory, skipping entries that match any exclude pattern."""
@@ -98,93 +187,19 @@ def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, q
 
 # --- Markdown Processing ---
 
-def extract_frontmatter_and_body(content: str) -> Tuple[Dict[str, Any], str]:
-    """Extract YAML frontmatter and markdown body from a string."""
-    meta: Dict[str, Any] = {}
-    body = content
-    if content.startswith('---'):
-        parts = content.split('---', 2)
-        if len(parts) >= 3:
-            yaml_content = parts[1].strip()
-            body = parts[2].strip()
-            try:
-                meta = yaml.safe_load(yaml_content) or {}
-                if not isinstance(meta, dict):
-                    logger.warning("YAML frontmatter did not parse to a dictionary. Ignoring frontmatter.")
-                    meta = {}
-                else:
-                    meta = json_ready(meta)
-            except yaml.YAMLError as e:
-                logger.warning(f"YAML parsing error: {e}. Ignoring frontmatter.")
-                meta = {}
-    else:
-        body = body.strip()
-    return meta, body
-
-def extract_wikilinks_filtered(body: str) -> List[str]:
-    """Extract wikilinks from a markdown body text, filtering out citations."""
-    outgoing_links: List[str] = []
-    for match in re.finditer(WIKILINK_ALL_RE, body):
-        target = match.group(1)
-        alias = match.group(2)
-        if alias and CITATION_ALIAS_RE.match(alias.strip()):
-            continue
-        outgoing_links.append(target)
-    seen: Set[str] = set()
-    filtered = []
-    for link in outgoing_links:
-        if link not in seen:
-            seen.add(link)
-            filtered.append(link)
-    return filtered
-
-def calculate_word_count(body: str) -> int:
-    """Calculate the number of words in a given text."""
-    return len(body.split())
-
-def extract_citations(body: str) -> List[str]:
-    """Extract all citation keys from a markdown body."""
-    inline_citations = INLINE_CITATION_RE.findall(body)
-    wikilink_citations = WIKILINKED_CITATION_RE.findall(body)
-    return sorted(set(inline_citations) | set(wikilink_citations))
+# Import markdown functions for backward compatibility
+from zk_core.markdown import (
+    extract_frontmatter_and_body,
+    extract_wikilinks_filtered,
+    calculate_word_count,
+    extract_citations,
+    json_ready
+)
 
 # --- Command Execution ---
 
-def run_command(cmd: List[str], input_data: Optional[str] = None, check: bool = False) -> Tuple[int, str, str]:
-    """
-    Run a command and return the return code, stdout, and stderr.
-    
-    Args:
-        cmd: Command to run as a list of strings
-        input_data: Optional string to pass as stdin
-        check: Whether to raise an exception on non-zero return code
-        
-    Returns:
-        Tuple containing (return_code, stdout, stderr)
-    """
-    try:
-        if input_data is not None:
-            proc = subprocess.run(
-                cmd, 
-                input=input_data,
-                text=True,
-                capture_output=True,
-                check=check
-            )
-        else:
-            proc = subprocess.run(
-                cmd,
-                text=True, 
-                capture_output=True,
-                check=check
-            )
-        return proc.returncode, proc.stdout, proc.stderr
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        return e.returncode, e.stdout or "", e.stderr or ""
-    except Exception as e:
-        logger.error(f"Error running command {' '.join(cmd)}: {e}")
-        return 1, "", str(e)
+# Import run_command as alias for backward compatibility
+from zk_core.commands import run_command
 
 # --- Filename Generation ---
 
