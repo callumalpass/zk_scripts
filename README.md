@@ -28,9 +28,7 @@ It evolved from a collection of personal scripts into this organized package.
 
 The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values.
 
-The default filename format is "YYYYMMDDxxx.md", where xxx are random letters, but this is now fully configurable through the config file (see the Configuration section below).
-
-There is currently no feature for the *creation* of notes (except of "working memory" notes). This has been avoided under the belief that template management is better managed by other tools; e.g. snippets in `neovim`.
+There is currently no dedicated feature for the *creation* of notes from templates (except of "working memory" notes). This has been avoided under the belief that template management is better managed by other tools; e.g. snippets in `neovim`.
 
 ## Installation
 
@@ -300,7 +298,7 @@ The Working Memory tool (`zk-working-mem`) is designed to capture fleeting thoug
 
 This feature was built after experiencing repeated difficulties with the zettelkasten system. 
 First, I often create notes note quite sure how to title them. I'll have an idea I want to work out, and having to come up with a title before I've done the writing impedes, or adds friction, to the writing process.
-Second, I think writing is a really important tool for thinking. And the zettelkasten system doesn't necessarily encourage scrappy, exploratory writing. It seems to encourage "evergreen" notes, or at least notes that could turn into something evergreen. I found this idea stopping me from writing just to explore an idea. With the `zk-working-mem` script, you are encourage to do scrappy, "scratch" writing. You don't have to come up with a title for your notes, if they don't seem title-able. Or you can pass the note to an llm, and see what titles it might suggest. After you've created the note, a link is pasted to the 'working-mem' file, a place where you can review what you've been working on recently. 
+Second, I think writing is a really important tool for thinking. And the zettelkasten system doesn't necessarily encourage scrappy, exploratory writing. It seems to encourage "evergreen" notes, or at least notes that could turn into something evergreen. I found this stopping me from writing just to explore an idea. With the `zk-working-mem` script, you are encouraged to do scrappy, "scratch" writing. You don't have to come up with a title for your notes, if they don't seem "title-able". Or you can pass the note to an llm, and see what titles it might suggest. After you've created the note, a link is pasted to the 'working-mem' file, a place where you can review what you've been working on recently, so that you can move on from the thought with the confidence that you will be encouraged to soon review it. 
 
 **Key Features:**
 
