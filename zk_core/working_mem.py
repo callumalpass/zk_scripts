@@ -1,20 +1,11 @@
-#!/usr/bin/env python3
 """
-A Python rewrite of the ‘working_mem’ script with an added “--nvim” flag.
-In its usual mode it works like before:
-  • Reads configuration from ~/.config/zk_scripts/config.yaml.
-  • Opens a temporary markdown file in your editor for capturing a note.
-  • Runs through titling (via LLM, manual entry, “Scratch” or “Journal”) and tagging.
-  • Writes a new note file with YAML frontmatter.
-  • Appends a wikilink to the working memory file.
+Working memory note management module.
 
-When the “--nvim” flag is provided it:
-  • Connects to a running Neovim (via a socket, defaulting to “/tmp/obsidian.sock” or as set via NVIM_SOCKET)
-  • Grabs the current buffer’s content and its file path.
-  • Runs through the titling and tagging logic and then overwrites that same file with new YAML frontmatter.
-  • Appends a wikilink to the working memory file.
-
-Note that this version assumes you have pynvim installed.
+This module provides functionality for:
+  - Creating a new note by capturing content
+  - Adding YAML frontmatter (title, date, tags)
+  - Appending a wikilink to the working memory file
+  - Integration with Neovim for direct editing
 """
 
 import argparse
@@ -25,14 +16,15 @@ import tempfile
 import random
 import string
 import datetime
-import pathlib
-from shutil import which
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 
-try:
-    import yaml
-except ImportError:
-    print("PyYAML is required. Please install it (e.g. pip install PyYAML).")
-    sys.exit(1)
+import yaml
+
+from zk_core.config import load_config, get_config_value, resolve_path
+from zk_core.utils import extract_frontmatter_and_body
+from zk_core.query import app as query_app
 
 # ANSI Colors for UI
 RED = "\033[31m"
@@ -41,9 +33,10 @@ YELLOW = "\033[33m"
 CYAN = "\033[36m"
 NC = "\033[0m"
 
-# Default values if no config is provided
-DEFAULT_NOTES_DIR = os.path.expanduser("~/Dropbox/notes")
-DEFAULT_EDITOR = "nvim"
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# Default values
 DEFAULT_LLM_INSTRUCT = (
     "Print five oneline potential headers for this zettel.\n"
     "The titles should be appropriate to aid in retrieval of the note at a later point in time.\n"
@@ -54,49 +47,12 @@ DEFAULT_LLM_INSTRUCT = (
     "Do not markup your response in any way."
 )
 
-def eprint(msg):
+def eprint(msg: str) -> None:
+    """Print to stderr."""
     print(msg, file=sys.stderr)
 
-def load_yaml_config():
-    config_path = os.path.expanduser("~/.config/zk_scripts/config.yaml")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            eprint(f"{RED}Error reading config:{NC} {e}")
-            return {}
-    else:
-        eprint(f"{YELLOW}Warning:{NC} Config file '{config_path}' not found. Using defaults.")
-        return {}
-
-def get_config():
-    """
-    Reads configuration values from the YAML config file as well as environment variable overrides.
-    Returns:
-      - notes_dir
-      - working_mem_file (inside notes_dir)
-      - editor (from env EDITOR_CMD or default)
-      - llm_cmd (command for generating titles)
-      - llm_instruct (the instruction/prompt)
-      - valid_tags_cmd (command that lists valid tags)
-    """
-    cfg = load_yaml_config()
-    notes_dir = cfg.get("notes_dir", DEFAULT_NOTES_DIR)
-    mybin_dir = cfg.get("mybin_dir", os.path.expanduser("~/mybin"))
-    working_mem_file = os.getenv("WORKING_MEM_FILE", os.path.join(notes_dir, "workingMem.md"))
-    editor = os.getenv("EDITOR_CMD", DEFAULT_EDITOR)
-    bibview_cfg = cfg.get("bibview", {})
-    llm_path = bibview_cfg.get("llm_path", os.path.join(mybin_dir, "swllm"))
-    llm_cmd = os.getenv("LLM_CMD", f"{llm_path} -m gemini-2.0-flash")
-    llm_instruct = os.getenv("LLM_INSTRUCT", DEFAULT_LLM_INSTRUCT)
-    zk_fzf_cfg = cfg.get("zk_fzf", {})
-    py_zk = zk_fzf_cfg.get("py_zk", os.path.join(mybin_dir, "py_zk.py"))
-    index_file = zk_fzf_cfg.get("index_file", os.path.join(notes_dir, "index.json"))
-    valid_tags_cmd = f"{py_zk} list --mode=unique-tags -i {index_file}"
-    return notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, valid_tags_cmd
-
-def check_directories(notes_dir, working_mem_file):
+def check_directories(notes_dir: str, working_mem_file: str) -> None:
+    """Ensure necessary directories and files exist."""
     if not os.path.isdir(notes_dir):
         eprint(f"{RED}Error:{NC} Notes directory '{notes_dir}' does not exist or is not a directory.")
         sys.exit(1)
@@ -109,20 +65,26 @@ def check_directories(notes_dir, working_mem_file):
             eprint(f"{RED}Error:{NC} Failed to create working memory file '{working_mem_file}'. {e}")
             sys.exit(1)
 
-def get_temp_file(notes_dir):
+def get_temp_file(notes_dir: str) -> tempfile.NamedTemporaryFile:
+    """Create a temporary file for editing."""
     tmp_dir = os.path.join(notes_dir, "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
-    temp = tempfile.NamedTemporaryFile(mode="w+", suffix=".md", prefix="note_", dir=tmp_dir, delete=False, encoding="utf-8")
+    temp = tempfile.NamedTemporaryFile(
+        mode="w+", suffix=".md", prefix="note_", 
+        dir=tmp_dir, delete=False, encoding="utf-8"
+    )
     return temp
 
-def call_editor(editor, filepath):
+def call_editor(editor: str, filepath: str) -> None:
+    """Launch the editor to edit a file."""
     try:
         subprocess.run([editor, filepath], check=True)
     except subprocess.CalledProcessError:
         eprint(f"{RED}Error:{NC} Editor '{CYAN}{editor}{RED}' exited with an error.")
         sys.exit(1)
 
-def quick_capture(temp_file_path, working_mem_file):
+def quick_capture(temp_file_path: str, working_mem_file: str) -> None:
+    """Append content directly to working memory file."""
     print(f"{CYAN}Quick capture mode:{NC} Appending content directly to working memory file...")
     try:
         with open(temp_file_path, "r", encoding="utf-8") as tf, open(working_mem_file, "a", encoding="utf-8") as wm:
@@ -135,7 +97,10 @@ def quick_capture(temp_file_path, working_mem_file):
     print(f"{GREEN}Done (quick capture).{NC}")
     sys.exit(0)
 
-def run_fzf(input_text, header="", prompt="", multi=False, preview_cmd=None, extra_args=None):
+def run_fzf(input_text: str, header: str = "", prompt: str = "", 
+            multi: bool = False, preview_cmd: Optional[str] = None, 
+            extra_args: Optional[List[str]] = None) -> str:
+    """Run fzf with the given parameters."""
     args = ["fzf", "--ansi"]
     if header:
         args.extend(["--header", header])
@@ -154,14 +119,12 @@ def run_fzf(input_text, header="", prompt="", multi=False, preview_cmd=None, ext
         return ""
     return proc.stdout.strip()
 
-def generate_random_suffix(n=3):
+def generate_random_suffix(n: int = 3) -> str:
+    """Generate a random string of lowercase letters."""
     return "".join(random.choices(string.ascii_lowercase, k=n))
 
-def get_title_from_llm_content(note_content, llm_cmd, llm_instruct):
-    """
-    Calls the LLM command with -s flag and the system prompt.
-    Sends the note content via stdin.
-    """
+def get_title_from_llm_content(note_content: str, llm_cmd: str, llm_instruct: str) -> Optional[str]:
+    """Generate title suggestions using an LLM."""
     try:
         llm_args = llm_cmd.split() + ["-s", llm_instruct]
         proc = subprocess.run(llm_args, input=note_content, text=True, capture_output=True)
@@ -173,14 +136,12 @@ def get_title_from_llm_content(note_content, llm_cmd, llm_instruct):
         eprint(f"{RED}Error calling LLM command:{NC} {e}")
         return None
 
-def choose_title(note_content, llm_cmd, llm_instruct, editor):
-    """
-    Presents a menu (via fzf) of title options using the note content,
-    and returns the chosen title. Also returns flags indicating scratch_mode and journal_mode.
-    """
+def choose_title(note_content: str, llm_cmd: str, llm_instruct: str, editor: str) -> Tuple[str, bool, bool]:
+    """Choose a title for the note, returning the title and flags for scratch/journal mode."""
     scratch_mode = False
     journal_mode = False
     title = ""
+    
     while True:
         menu = (
             f"{CYAN}1: Generate title with LLM and edit{NC}\n"
@@ -189,34 +150,52 @@ def choose_title(note_content, llm_cmd, llm_instruct, editor):
             f"{CYAN}4: Use 'Journal' title (simple date){NC}\n"
             f"{CYAN}q: Quit without saving{NC}\n"
         )
-        # Use bat if available for previewing the note content.
+        
+        # Use bat if available for previewing the note content
         preview_cmd = None
-        if which("bat"):
-            # Since note_content is not in a file, we create a temp file for preview only.
-            temp_prev = tempfile.NamedTemporaryFile(mode="w+", suffix=".md", prefix="preview_", delete=False, encoding="utf-8")
+        temp_prev = None
+        if subprocess.run(["which", "bat"], capture_output=True).returncode == 0:
+            # Create a temp file for preview
+            temp_prev = tempfile.NamedTemporaryFile(
+                mode="w+", suffix=".md", prefix="preview_", delete=False, encoding="utf-8"
+            )
             temp_prev.write(note_content)
             temp_prev.flush()
             preview_cmd = f"bat {temp_prev.name}"
-        choice = run_fzf(menu, header="Choose title option:", prompt="Title option: ", extra_args=["--height=8", "--bind", "one:accept"], preview_cmd=preview_cmd)
-        if preview_cmd:
-            # remove the temporary preview file
+            
+        choice = run_fzf(
+            menu, 
+            header="Choose title option:", 
+            prompt="Title option: ", 
+            extra_args=["--height=8", "--bind", "one:accept"], 
+            preview_cmd=preview_cmd
+        )
+        
+        # Clean up preview temp file if created
+        if temp_prev:
             try:
                 os.unlink(temp_prev.name)
             except Exception:
                 pass
+                
         choice = choice.split(":")[0].strip()
+        
         if choice == "1" or choice == "":
+            # Generate with LLM
             print("Generating title with LLM...")
             llm_result = get_title_from_llm_content(note_content, llm_cmd, llm_instruct)
             if not llm_result:
                 continue
-            # Write LLM suggestions to a temporary file for user editing.
+                
+            # Write LLM suggestions to temp file for editing
             title_temp = get_temp_file(os.path.dirname(tempfile.gettempdir()))
             title_temp_path = title_temp.name
             title_temp.write(llm_result)
             title_temp.close()
+            
             print(f"Opening editor to edit LLM titles... {CYAN}{editor}{NC}")
             call_editor(editor, title_temp_path)
+            
             try:
                 with open(title_temp_path, "r", encoding="utf-8") as f:
                     edited_titles = f.readlines()
@@ -238,104 +217,119 @@ def choose_title(note_content, llm_cmd, llm_instruct, editor):
                 eprint(f"{RED}Error processing edited titles:{NC} {e}")
                 os.unlink(title_temp_path)
                 continue
+                
         elif choice == "2":
+            # Manual title entry
             title = input("Enter your title: ").strip()
             break
+            
         elif choice == "3":
+            # Scratch note
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             title = f"Scratch {now}"
             scratch_mode = True
             break
+            
         elif choice == "4":
+            # Journal note
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             title = now
             journal_mode = True
             break
+            
         elif choice.lower() == "q":
             print("Quitting without saving notes.")
             sys.exit(0)
+            
         else:
             print(f"{RED}Invalid choice.{NC} Please enter 1, 2, 3, 4 or q.")
+            
     return title, scratch_mode, journal_mode
 
-def select_tags(valid_tags_cmd):
-    """
-    Optionally fetch valid tags using valid_tags_cmd and let the user choose via fzf.
-    Then ask if the user wants to add extra manual tags.
-    Returns a list of tags.
-    """
+def select_tags(index_file: str) -> List[str]:
+    """Select tags for the note using fzf."""
     tags = []
     try:
-        proc = subprocess.run(valid_tags_cmd.split(), capture_output=True, text=True)
-        valid_tags = proc.stdout.strip() if proc.returncode == 0 else ""
+        # Use the query module directly
+        from typer.testing import CliRunner
+        runner = CliRunner()
+        query_args = [
+            "list",
+            "--mode", "unique-tags",
+            "-i", index_file
+        ]
+        result = runner.invoke(query_app, query_args)
+        valid_tags = result.stdout.strip() if result.exit_code == 0 else ""
     except Exception as e:
-        print(f"{YELLOW}Warning:{NC} Could not fetch valid tags using '{CYAN}{valid_tags_cmd}{NC}'. {e}")
+        print(f"{YELLOW}Warning:{NC} Could not fetch valid tags. {e}")
         valid_tags = ""
+        
     if valid_tags:
-        selection = run_fzf(valid_tags, header="Select tags (TAB/SPACE for multiple, ENTER when done):",
-                              prompt="System Tags: ", multi=True, extra_args=["--height=28"])
+        selection = run_fzf(
+            valid_tags, 
+            header="Select tags (TAB/SPACE for multiple, ENTER when done):",
+            prompt="System Tags: ", 
+            multi=True, 
+            extra_args=["--height=28"]
+        )
         if selection:
             system_tags = [tag.strip() for tag in selection.splitlines() if tag.strip()]
             tags.extend(system_tags)
     else:
         print(f"{YELLOW}Warning:{NC} No valid tags")
+        
     return tags
 
-def write_note_file(filepath, title, note_content):
-    """
-    Writes the note to the given filepath.
-    If the file exists and contains YAML frontmatter,
-    the existing metadata is merged with the new metadata and the old YAML block is removed.
-    The field 'dateCreated' is preserved if already present.
-    Other fields (like title, dateModified and zettelid) are updated.
-    """
+def write_note_file(filepath: str, title: str, note_content: str) -> None:
+    """Write the note to a file with YAML frontmatter."""
     now = datetime.datetime.now()
     datetime_iso = now.strftime("%Y-%m-%dT%H:%M:%S")
-    filepath = pathlib.Path(filepath)
+    filepath = Path(filepath)
     old_yaml = {}
     body = note_content
 
+    # If file exists, try to preserve existing frontmatter
     if filepath.exists():
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
-            # If the content starts with a YAML block, remove it.
-            if content.startswith("---\n"):
-                # Find the end of the YAML block.
-                second_delim = content.find("\n---", 3)
-                if second_delim != -1:
-                    yaml_block = content[4:second_delim].strip()
-                    try:
-                        old_yaml = yaml.safe_load(yaml_block) or {}
-                    except yaml.YAMLError as e:
-                        eprint(f"{YELLOW}Warning:{NC} Could not parse existing YAML in '{filepath}'. {e}")
-                    # Remove the YAML block from the body.
-                    body = content[second_delim + 5:].lstrip()
+            # Extract existing frontmatter
+            meta, extracted_body = extract_frontmatter_and_body(content)
+            old_yaml = meta
+            body = extracted_body
         except Exception as e:
             eprint(f"{RED}Error:{NC} Failed to read existing note file '{filepath}'. {e}")
 
-    # Determine dateCreated: preserve if present; otherwise use file birth/creation time.
+    # Determine dateCreated: preserve if present; otherwise use file creation time
     if "dateCreated" in old_yaml:
         date_created_iso = old_yaml["dateCreated"]
     else:
         try:
-            creation_timestamp = os.path.getbirthtime(str(filepath))
-        except AttributeError:
-            creation_timestamp = os.path.getctime(str(filepath))
-            print(f"{YELLOW}Warning:{NC} `os.path.getbirthtime` not available. Falling back to `os.path.getctime` for dateCreated.")
-        date_created_iso = datetime.datetime.fromtimestamp(creation_timestamp).strftime("%Y-%m-%dT%H:%M:%S")
-    # Merge metadata.
+            # Try to get creation time (stat birthtime if available, otherwise ctime)
+            stat = filepath.stat() if filepath.exists() else None
+            if hasattr(stat, 'st_birthtime'):
+                creation_timestamp = stat.st_birthtime
+            else:
+                creation_timestamp = os.path.getctime(str(filepath)) if filepath.exists() else now.timestamp()
+            date_created_iso = datetime.datetime.fromtimestamp(creation_timestamp).strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception as e:
+            logger.warning(f"Error getting file creation time: {e}. Using current time.")
+            date_created_iso = datetime_iso
+
+    # Merge metadata
     merged_yaml = old_yaml.copy()  # preserve any preexisting fields
     merged_yaml.update({
         "title": title,
         "dateCreated": date_created_iso,
         "dateModified": datetime_iso,
-        "tags": old_yaml.get("tags", []),  # tags will be updated later via add_tags_to_note if needed
+        "tags": old_yaml.get("tags", []),  # tags will be updated later
         "zettelid": filepath.stem,
     })
+    
     updated_yaml_str = yaml.dump(merged_yaml, indent=2, sort_keys=False)
     frontmatter = f"---\n{updated_yaml_str}---\n\n# {title}\n\n"
-    # Write the new file with merged YAML frontmatter and the note's body (with previous YAML removed).
+    
+    # Write the new file
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(frontmatter)
@@ -344,55 +338,35 @@ def write_note_file(filepath, title, note_content):
         eprint(f"{RED}Error:{NC} Failed to write note file '{filepath}'. {e}")
         sys.exit(1)
 
-def update_yaml_tags(filepath, tags_to_add):
-    """Adds tags to the YAML frontmatter of a markdown file."""
+def add_tags_to_note(filepath: str, tags: List[str]) -> None:
+    """Add tags to a note's YAML frontmatter."""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-
-        yaml_marker = "---\n"
-        yaml_start_index = content.find(yaml_marker)
-        yaml_end_index = -1
-
-        if yaml_start_index == 0:
-            yaml_end_index = content.find(yaml_marker, len(yaml_marker))
-            if yaml_end_index != -1:
-                yaml_str = content[len(yaml_marker):yaml_end_index]
-                try:
-                    yaml_data = yaml.safe_load(yaml_str) or {}
-                except yaml.YAMLError as e:
-                    eprint(f"{YELLOW}Warning:{NC} Could not parse existing YAML in '{filepath}'. {e}")
-                    yaml_data = {}
-            else:
-                yaml_data = {}
-        else:
-            yaml_data = {}
-
-        current_tags = yaml_data.get('tags', [])
+            
+        # Extract frontmatter and body
+        meta, body = extract_frontmatter_and_body(content)
+        
+        # Update tags
+        current_tags = meta.get('tags', [])
         if not isinstance(current_tags, list):
-            current_tags = []  # ensure we deal with a list
-
-        updated_tags = list(set(current_tags + tags_to_add))
-        yaml_data['tags'] = updated_tags
-
-        updated_yaml_str = yaml.dump(yaml_data, indent=2, sort_keys=False)
-
-        if yaml_start_index == 0 and yaml_end_index != -1:
-            new_content = yaml_marker + updated_yaml_str + yaml_marker + content[yaml_end_index + len(yaml_marker):]
-        else:
-            new_frontmatter = yaml_marker + updated_yaml_str + yaml_marker + "\n"
-            new_content = new_frontmatter + content
-
+            current_tags = []
+        
+        updated_tags = list(set(current_tags + tags))
+        meta['tags'] = updated_tags
+        
+        # Write updated frontmatter and content
+        updated_yaml_str = yaml.dump(meta, indent=2, sort_keys=False)
+        new_content = f"---\n{updated_yaml_str}---\n\n{body}"
+        
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(new_content)
-
+            
     except Exception as e:
         eprint(f"{RED}Error:{NC} Failed to update tags in note file '{filepath}'. {e}")
 
-def add_tags_to_note(filepath, tags):
-    update_yaml_tags(filepath, tags)
-
-def append_working_mem_link(working_mem_file, zettelid_base, title):
+def append_working_mem_link(working_mem_file: str, zettelid_base: str, title: str) -> None:
+    """Append a wikilink to the working memory file."""
     link_text = f"- [[{zettelid_base}|{title}]]\n"
     try:
         with open(working_mem_file, "a", encoding="utf-8") as f:
@@ -401,16 +375,18 @@ def append_working_mem_link(working_mem_file, zettelid_base, title):
         eprint(f"{RED}Error:{NC} Failed to append link to working memory file '{working_mem_file}'. {e}")
         sys.exit(1)
 
-def clear_screen():
+def clear_screen() -> None:
+    """Clear the terminal screen."""
     print("\033[H\033[J", end="")
 
-# When using --nvim mode we import pynvim to get the current Neovim buffer.
-def get_nvim_buffer_content(socket_path):
+def get_nvim_buffer_content(socket_path: str) -> Tuple[str, str, Any]:
+    """Get the content and filename of the current Neovim buffer."""
     try:
         import pynvim
     except ImportError:
         eprint(f"{RED}Error:{NC} pynvim is required in --nvim mode. Please install it (pip install pynvim).")
         sys.exit(1)
+        
     try:
         nvim = pynvim.attach('socket', path=socket_path)
         buf = nvim.current.buffer
@@ -421,11 +397,13 @@ def get_nvim_buffer_content(socket_path):
         eprint(f"{RED}Error connecting to Neovim:{NC} {e}")
         sys.exit(1)
 
-def main():
+def main() -> None:
+    """Main function."""
     parser = argparse.ArgumentParser(description="Create a new note and update working memory.")
     parser.add_argument("-s", action="store_true", help="Scratch mode")
     parser.add_argument("-q", action="store_true", help="Quick capture mode")
     parser.add_argument("--nvim", action="store_true", help="Use current Neovim buffer (no temporary file)")
+    parser.add_argument("--config-file", help="Path to configuration file")
     args = parser.parse_args()
 
     scratch_mode_flag = args.s
@@ -433,11 +411,33 @@ def main():
     use_nvim = args.nvim
     journal_mode = False
 
-    notes_dir, working_mem_file, editor, llm_cmd, llm_instruct, valid_tags_cmd = get_config()
+    # Load configuration
+    config = load_config(args.config_file)
+    
+    # Get configuration values
+    notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+    notes_dir = resolve_path(notes_dir)
+    
+    working_mem_file = get_config_value(config, "working_mem.file", os.path.join(notes_dir, "workingMem.md"))
+    working_mem_file = resolve_path(working_mem_file)
+    
+    editor = os.getenv("EDITOR_CMD", "nvim")
+    
+    llm_path = get_config_value(config, "bibview.llm_path", os.path.join(os.path.expanduser("~/mybin"), "swllm"))
+    llm_path = resolve_path(llm_path)
+    
+    llm_cmd = os.getenv("LLM_CMD", f"{llm_path} -m gemini-2.0-flash")
+    llm_instruct = os.getenv("LLM_INSTRUCT", DEFAULT_LLM_INSTRUCT)
+    
+    # Get index file path
+    index_file = get_config_value(config, "zk_fzf.index_file", os.path.join(notes_dir, "index.json"))
+    index_file = resolve_path(index_file)
+    
+    # Make sure directories exist
     check_directories(notes_dir, working_mem_file)
 
     if use_nvim:
-        # Use the current Neovim buffer.
+        # Use the current Neovim buffer
         socket_path = os.getenv("NVIM_SOCKET", "/tmp/obsidian.sock")
         note_content, file_name, nvim_instance = get_nvim_buffer_content(socket_path)
         if not note_content.strip():
@@ -446,10 +446,10 @@ def main():
         if not file_name:
             eprint(f"{RED}Error:{NC} Current buffer is not associated with a file.")
             sys.exit(1)
-        note_path = pathlib.Path(file_name)
+        note_path = Path(file_name)
         print(f"{GREEN}Using Neovim buffer from file: {CYAN}{file_name}{NC}")
     else:
-        # Normal mode: open a temporary file in the editor.
+        # Normal mode: open a temporary file in the editor
         temp = get_temp_file(notes_dir)
         temp_file_path = temp.name
         temp.close()
@@ -470,7 +470,7 @@ def main():
     if quick_capture_mode and (not use_nvim):
         quick_capture(temp_file_path, working_mem_file)
 
-    # Display the captured note for preview.
+    # Display the captured note for preview
     clear_screen()
     print("\n" + note_content + "\n" + "-" * 40 + "\n")
 
@@ -485,38 +485,40 @@ def main():
 
     clear_screen()
     print(f"Using title: '{CYAN}{title}{NC}'")
-    selected_tags = select_tags(valid_tags_cmd)
+    selected_tags = select_tags(index_file)
 
     if use_nvim:
-        # In nvim mode we use the file already open in nvim.
-        note_path = pathlib.Path(file_name)
+        # In nvim mode we use the file already open in nvim
+        note_path = Path(file_name)
     else:
+        # Create a new note file with date-based ID
         now = datetime.datetime.now()
         date_prefix = now.strftime("%y%m%d")
         random_suffix = generate_random_suffix(3)
         filename = f"{date_prefix}{random_suffix}.md"
-        note_path = pathlib.Path(notes_dir) / filename
+        note_path = Path(notes_dir) / filename
 
-    # Write the note file with the new (merged) YAML frontmatter.
-    write_note_file(note_path, title, note_content)
+    # Write the note file with YAML frontmatter
+    write_note_file(str(note_path), title, note_content)
     print(f"{GREEN}Note created/updated successfully: '{CYAN}{note_path}{GREEN}'.{NC}")
 
     if not use_nvim:
         os.unlink(temp_file_path)
 
+    # Add tags
     if selected_tags:
-        add_tags_to_note(note_path, selected_tags)
+        add_tags_to_note(str(note_path), selected_tags)
     if scratch_mode_flag:
-        add_tags_to_note(note_path, ["scratch"])
+        add_tags_to_note(str(note_path), ["scratch"])
     if journal_mode:
-        add_tags_to_note(note_path, ["journal"])
+        add_tags_to_note(str(note_path), ["journal"])
 
-    # Append a wikilink to the working memory file.
+    # Append a wikilink to the working memory file
     append_working_mem_link(working_mem_file, note_path.stem, title)
     print(f"{GREEN}Link appended to working memory file.{NC}")
     print(f"{GREEN}Done.{NC}")
 
-    # Optional: in nvim mode, trigger a buffer reload.
+    # In nvim mode, trigger a buffer reload
     if use_nvim:
         try:
             nvim_instance.command("edit!")
@@ -525,4 +527,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

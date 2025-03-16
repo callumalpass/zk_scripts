@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zk_core"
+version = "0.1.0"
+description = "A collection of Zettelkasten scripts for managing markdown notes"
+requires-python = ">=3.8"
+dependencies = [
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "tabulate>=0.9.0",
+    "typer>=0.9.0",
+    "openai>=1.0.0,<2.0.0",
+    "numpy>=1.24.0",
+    "pynvim>=0.4.3",
+    "pydantic>=2.0.0",
+    "typing-extensions>=4.7.0"
+]
+
+[tool.setuptools]
+packages = ["zk_core"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true
+
+[[tool.mypy.overrides]]
+module = "zk_core.constants"
+check_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+select = ["E", "F", "W", "I"]
+ignore = []
+fixable = ["A", "B", "C", "D", "E", "F", "I"]
+unfixable = []
+
+[project.scripts]
+zk-index = "zk_core.index:main"
+zk-query = "zk_core.query:app"
+zk-fzf = "zk_core.fzf_interface:main"
+zk-working-mem = "zk_core.working_mem:main"
+zk-backlinks = "zk_core.backlinks:main"
+zk-bib-view = "zk_core.bibview:main"
+zk-bib-build = "zk_core.bibbuild:main"
+zk-person-search = "zk_core.person_search:main"
+zk-workout-log = "zk_core.workout_log:main"

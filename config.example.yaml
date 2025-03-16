@@ -1,0 +1,55 @@
+# ZK Core Example Configuration
+
+# Main configuration
+notes_dir: "~/notes"  # Path to your notes directory
+
+# Index configuration
+zk_index:
+  index_file: "index.json"  # Name of the index file
+  exclude_patterns: [".git", ".obsidian", "node_modules"]  # Directories to exclude
+  excluded_files: ["README.md"]  # Files to exclude from indexing
+
+# Query configuration
+query:
+  default_index: "index.json"
+  default_fields: ["filename", "title", "tags"]
+
+# FZF interface configuration
+fzf_interface:
+  bat_command: "bat"  # Command for preview
+  fzf_args: "--height=80% --layout=reverse --info=inline"
+
+# Working memory configuration
+working_mem:
+  template_path: "~/notes/templates/working_mem.md"
+  editor: "nvim"
+  tag: "working_mem"
+
+# Backlinks configuration
+backlinks:
+  notes_dir: "~/notes"
+  bat_theme: "Dracula"
+
+# Bibliography configuration
+bibview:
+  bibliography_json: "~/Dropbox/bibliography.json"  # Path to bibliography JSON
+  bibhist: "~/.bibhist"  # Path to history file
+  library: "~/biblib"  # Path to bibliography library
+  notes_dir_for_zk: "~/notes"  # Path for Zettelkasten notes
+  bat_theme: "Dracula"  # Theme for bat preview
+  bibview_open_doc_script: "~/bin/open_doc.sh"  # Script for opening documents
+  llm_path: "~/bin/llm"  # Path to LLM script
+  zk_script: "~/bin/zk"  # Path to zk script
+  link_zathura_tmp_script: "~/bin/link_zathura.sh"  # Script for linking Zathura
+  obsidian_socket: "/tmp/obsidiansocket"  # Socket for Obsidian
+  getbibkeys_script: "~/bin/getbibkeys.sh"  # Script for getting bib keys
+
+# Person search configuration
+personSearch:
+  notes_dir: "~/notes"  # Path to notes directory
+  bat_command: "bat"  # Command for preview
+
+# Global logging configuration
+logging:
+  level: "INFO"  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  file: "~/.zk_core.log"  # Log file path
