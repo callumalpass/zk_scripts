@@ -59,7 +59,9 @@ def save_json_file(file_path: Path, data: Any, indent: int = 2) -> bool:
 # --- File System Utilities ---
 
 def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, quiet: bool = False) -> List[str]:
-    """Recursively scan a directory, skipping entries that contain any exclude pattern."""
+    """Recursively scan a directory, skipping entries that match any exclude pattern."""
+    import fnmatch
+    
     exclude_patterns = exclude_patterns or []
     paths = []
     if not quiet:
@@ -68,9 +70,11 @@ def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, q
         with os.scandir(root) as it:
             for entry in it:
                 full_path = entry.path
+                relative_path = os.path.relpath(full_path, root)
                 skip = False
                 for pattern in exclude_patterns:
-                    if pattern in full_path:
+                    # Use proper pattern matching instead of simple substring check
+                    if fnmatch.fnmatch(relative_path, pattern) or fnmatch.fnmatch(os.path.basename(full_path), pattern):
                         if not quiet:
                             logger.debug(f"Excluding {full_path} because it matches pattern '{pattern}'")
                         skip = True

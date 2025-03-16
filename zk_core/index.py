@@ -249,7 +249,7 @@ def run_indexer(
         else:
             exclude_patterns_list = exclude_patterns.split()
     else:
-        config_val = get_config_value(config, "zk_index.fd_exclude_patterns", fd_exclude_patterns_default)
+        config_val = get_config_value(config, "zk_index.exclude_patterns", fd_exclude_patterns_default)
         if isinstance(config_val, str):
             matches = re.findall(r'-E\s+([^\s]+)', config_val)
             exclude_patterns_list = matches if matches else config_val.split()
