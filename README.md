@@ -10,13 +10,15 @@ Originally a collection of separate scripts, ZK Core has been refactored into a 
 
 ## Features
 
-- **Note Indexing**: Scan your notes directory and create a searchable index with metadata
-- **Advanced Querying**: Search notes by tags, content, and other metadata
-- **Interactive Note Navigation**: Browse notes using fuzzy-finder (fzf) interface
-- **Backlink Tracking**: View and analyze connections between notes
-- **Bibliography Management**: Handle academic citations and references
-- **Person Search**: Quickly find and insert person references
-- **Workout Logging**: Track exercises, sets, and workout sessions
+- Core features:
+    - **Note Indexing**: Scan your notes directory and create a searchable index with metadata
+    - **Advanced Querying**: Search notes by tags, content, and other metadata
+    - **Interactive Note Navigation**: Browse notes using fuzzy-finder (fzf) interface
+    - **Backlink Tracking**: View and analyze connections between notes
+- Extras (plugins??):
+    - **Bibliography Management**: Handle academic citations and references
+    - **Person Search**: Quickly find and insert person references for use with journalling or contact management
+    - **Workout Logging**: Track exercises, sets, and workout sessions
 
 ## Installation
 
@@ -69,13 +71,22 @@ The json index is used by several other scripts for super-fast querying and anal
 
 ```bash
 # Generate an index of your notes
-zk-index
+zk-index run
 
 # Force a full reindex 
-zk-index --full-reindex
+zk-index run --full-reindex
 
 # Generate embeddings along with the index
-zk-index --generate-embeddings
+zk-index run --generate-embeddings
+
+# Test OpenAI API key for embedding generation
+zk-index test-api
+
+# Validate that embeddings exist for all notes
+zk-index validate-embeddings
+
+# Regenerate all embeddings (useful after API model change)
+zk-index regenerate-embeddings
 ```
 
 The indexing script (`zk-index`) is a powerful tool that scans your Zettelkasten directory and creates a searchable index with rich metadata about each note. Key features include:
@@ -87,8 +98,10 @@ The indexing script (`zk-index`) is a powerful tool that scans your Zettelkasten
 - **Embedding Generation**: Optionally generates vector embeddings using OpenAI models for semantic search functionality
 - **Parallel Processing**: Uses multiple processor cores for faster indexing of large note collections
 - **Customization**: Allows exclusion of specific directories and patterns from indexing
+- **Typer CLI**: Modern command-line interface with subcommands and rich help documentation
+- **Embedding Management**: Validates, tests, and regenerates embeddings as needed
 
-The generated index is stored as a JSON file, which serves as a foundation for the various search and query operations.
+The generated index is stored as a JSON file, which serves as a foundation for the various search and query operations. When using embedding functionality, make sure to set the `OPEN_AI_KEY` environment variable with your OpenAI API key.
 
 ### Note Querying
 
@@ -293,8 +306,9 @@ zk_core/
 │   └── __init__.py
 ├── utils.py
 ├── models.py
-├── index.py
-├── query.py
+├── constants.py
+├── index.py        # Now uses Typer CLI
+├── query.py        # Uses Typer CLI
 ├── fzf_interface.py
 ├── working_mem.py
 ├── backlinks.py
@@ -303,6 +317,17 @@ zk_core/
 ├── person_search.py
 └── workout_log.py
 ```
+
+### Recent Improvements
+
+- Fixed missing `re` module import in utils.py
+- Converted index.py to use Typer CLI like query.py
+- Added embedding management commands:
+  - `test-api`: Tests OpenAI API connection
+  - `validate-embeddings`: Checks coverage of embeddings
+  - `regenerate-embeddings`: Rebuilds all embeddings
+- Improved error handling for OpenAI API key
+- Enhanced progress reporting and success messages
 
 ### Adding New Features
 

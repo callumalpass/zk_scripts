@@ -38,12 +38,12 @@ def build_fzf_bindings(cfg: Dict[str, Any], templink: str, notes_dir: str, index
         },
         {
             "key": "alt-a",
-            "fzf_cmd": f"alt-a:execute[zk-index]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            "fzf_cmd": f"alt-a:execute[zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
             "desc": "Run the index script and refresh the notes list."
         },
         {
             "key": "alt-c",
-            "fzf_cmd": f"alt-c:execute[zk-index]+reload:(zk-query list -i {index_file} --color always -s dateCreated --fields filename --fields title --fields tags --fields dateCreated)",
+            "fzf_cmd": f"alt-c:execute[zk-index run]+reload:(zk-query list -i {index_file} --color always -s dateCreated --fields filename --fields title --fields tags --fields dateCreated)",
             "desc": "Sort by creation date"
         },
         {
@@ -53,12 +53,12 @@ def build_fzf_bindings(cfg: Dict[str, Any], templink: str, notes_dir: str, index
         },
         {
             "key": "alt-o",
-            "fzf_cmd": f"alt-o:execute[zk-index]+reload:(zk-query list --mode orphans -i {index_file} --color always)",
+            "fzf_cmd": f"alt-o:execute[zk-index run]+reload:(zk-query list --mode orphans -i {index_file} --color always)",
             "desc": "Run index script and show orphan notes."
         },
         {
             "key": "alt-O",
-            "fzf_cmd": f"alt-O:execute[zk-index]+reload:(zk-query list --mode untagged-orphans -i {index_file} --color always)",
+            "fzf_cmd": f"alt-O:execute[zk-index run]+reload:(zk-query list --mode untagged-orphans -i {index_file} --color always)",
             "desc": "Run index script and show untagged orphan notes."
         },
         {
@@ -73,7 +73,7 @@ def build_fzf_bindings(cfg: Dict[str, Any], templink: str, notes_dir: str, index
         },
         {
             "key": "ctrl-e",
-            "fzf_cmd": f"ctrl-e:execute[nvim {{+1}}.md ; zk-index]+reload:(zk-query list --mode notes -i {index_file} --color always)",
+            "fzf_cmd": f"ctrl-e:execute[nvim {{+1}}.md ; zk-index run]+reload:(zk-query list --mode notes -i {index_file} --color always)",
             "desc": "Edit note in nvim then reindex and refresh."
         },
         {
@@ -260,11 +260,11 @@ def main() -> None:
     # Run the index script (unless skipped)
     if not args.skip_index:
         if args.dry_run:
-            print(f"[DRY-RUN] Would run index script: {zk_index_script}")
+            print(f"[DRY-RUN] Would run index script: {zk_index_script} run")
         else:
             try:
                 # Use the entry point script name directly
-                subprocess.run(["zk-index"], check=False)
+                subprocess.run(["zk-index", "run"], check=False)
                 if args.debug:
                     logger.debug("Ran index script in foreground.")
             except Exception as e:
