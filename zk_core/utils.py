@@ -7,6 +7,8 @@ import yaml
 import logging
 import datetime
 import re
+import random
+import string
 from typing import Dict, List, Tuple, Any, Optional, Set
 from pathlib import Path
 
@@ -15,7 +17,9 @@ from zk_core.constants import (
     INLINE_CITATION_RE,
     WIKILINKED_CITATION_RE,
     WIKILINK_ALL_RE,
-    CITATION_ALIAS_RE
+    CITATION_ALIAS_RE,
+    DEFAULT_FILENAME_FORMAT,
+    DEFAULT_FILENAME_EXTENSION
 )
 
 logger = logging.getLogger(__name__)
@@ -138,3 +142,56 @@ def extract_citations(body: str) -> List[str]:
     inline_citations = INLINE_CITATION_RE.findall(body)
     wikilink_citations = WIKILINKED_CITATION_RE.findall(body)
     return sorted(set(inline_citations) | set(wikilink_citations))
+
+# --- Filename Generation ---
+
+def generate_random_string(length: int) -> str:
+    """Generate a random string of lowercase letters."""
+    return "".join(random.choices(string.ascii_lowercase, k=length))
+
+def generate_filename(format_str: Optional[str] = None, extension: Optional[str] = None) -> str:
+    """
+    Generate a filename based on the provided format string.
+    
+    The format string supports:
+    - All strftime format codes (https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes)
+    - {random:N} where N is the number of random lowercase letters to generate
+    
+    Args:
+        format_str: The format string to use (from config or default)
+        extension: The file extension to use (from config or default)
+        
+    Returns:
+        A generated filename with extension
+    """
+    now = datetime.datetime.now()
+    
+    # Use defaults if not provided
+    if format_str is None:
+        format_str = DEFAULT_FILENAME_FORMAT
+    if extension is None:
+        extension = DEFAULT_FILENAME_EXTENSION
+    
+    # Make sure extension starts with a dot
+    if not extension.startswith('.'):
+        extension = '.' + extension
+    
+    # First apply datetime formatting
+    try:
+        filename = now.strftime(format_str)
+    except ValueError as e:
+        logger.warning(f"Error in strftime format: {e}. Using default format.")
+        filename = now.strftime(DEFAULT_FILENAME_FORMAT)
+    
+    # Then handle {random:N} placeholder
+    random_pattern = re.compile(r'\{random:(\d+)\}')
+    while True:
+        match = random_pattern.search(filename)
+        if not match:
+            break
+        random_length = int(match.group(1))
+        random_str = generate_random_string(random_length)
+        filename = filename.replace(match.group(0), random_str, 1)
+    
+    # Add extension
+    return filename + extension

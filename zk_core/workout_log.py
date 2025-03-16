@@ -26,7 +26,7 @@ from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 
 from zk_core.config import load_config, get_config_value, resolve_path
-from zk_core.utils import extract_frontmatter_and_body, json_ready
+from zk_core.utils import extract_frontmatter_and_body, json_ready, generate_filename
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -79,11 +79,15 @@ class WorkoutTemplate:
 
 
 # --- Utility Functions ---
-def generate_unique_id() -> str:
-    """Generate a unique ID using today's date and three random letters."""
-    today = datetime.datetime.now().strftime("%y%m%d")
-    rand = "".join(random.choices(string.ascii_lowercase, k=3))
-    uid = today + rand
+def generate_unique_id(format_str: Optional[str] = None, extension: Optional[str] = None) -> str:
+    """Generate a unique ID using the configured format or default (today's date and three random letters).
+    
+    Note: This is updated to use the configurable filename format, but
+    still returns just the stem (without extension) for backward compatibility.
+    """
+    filename = generate_filename(format_str, extension or ".md")
+    # Remove extension for ID
+    uid = Path(filename).stem
     logger.debug("Generated unique ID: %s", uid)
     return uid
 
@@ -143,10 +147,15 @@ class DataManager:
     Reads data from an external index (index.json) for fast access.
     New notes are written to markdown files as before.
     """
-    def __init__(self, notes_dir: Path, index_file: Path, log_file: Path, backup_interval_days: int = 1):
+    def __init__(self, notes_dir: Path, index_file: Path, log_file: Path, 
+                 backup_interval_days: int = 1, 
+                 filename_format: Optional[str] = None,
+                 filename_extension: Optional[str] = None):
         self.notes_dir = notes_dir
         self.index_file = index_file  # This is produced externally (do not write to it)
         self.log_file = log_file
+        self.filename_format = filename_format  # Format for generating new filenames
+        self.filename_extension = filename_extension  # Extension for new files
         self._exercise_cache: Optional[List[Exercise]] = None
         self._session_cache: Optional[List[WorkoutSession]] = None
         self._template_cache: Optional[List[WorkoutTemplate]] = None
@@ -210,8 +219,8 @@ class DataManager:
     def create_exercise(self, title: str, equipment: str) -> str:
         """Create a new exercise file.
         Note: This writes a new markdown file; the external index is not updated here."""
-        uid = generate_unique_id()
-        filename = f"{uid}.md"
+        uid = generate_unique_id(self.filename_format, self.filename_extension)
+        filename = f"{uid}.md"  # Add extension for full filename
         filepath = self.notes_dir / filename
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         iso_time = get_current_iso(with_seconds=False)
@@ -307,8 +316,8 @@ class DataManager:
     def save_workout_session(self, exercises: List[Dict[str, Any]]) -> str:
         """Save a workout session note with recorded exercises after merging duplicate entries."""
         merged_exercises = self.merge_exercise_entries(exercises)
-        uid = generate_unique_id()
-        filename = f"{uid}.md"
+        uid = generate_unique_id(self.filename_format, self.filename_extension)
+        filename = f"{uid}.md"  # Add extension for full filename
         filepath = self.notes_dir / filename
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         iso_time = get_current_iso(with_seconds=False)
@@ -340,8 +349,8 @@ class DataManager:
 
     def create_workout_template(self, name: str, description: str, exercises: List[Exercise]) -> str:
         """Create a new workout template note and return its filename."""
-        uid = generate_unique_id()
-        filename = f"{uid}.md"
+        uid = generate_unique_id(self.filename_format, self.filename_extension)
+        filename = f"{uid}.md"  # Add extension for full filename
         filepath = self.notes_dir / filename
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         iso_time = get_current_iso(with_seconds=False)
@@ -1998,7 +2007,21 @@ def main() -> None:
     logger.info("Ultimate Workout Logger started")
     logger.debug("Using notes directory: %s", NOTES_DIR)
 
-    dm = DataManager(NOTES_DIR, INDEX_FILE, LOG_FILE_PATH, backup_interval_days=args.backup_interval)
+    # Load configuration
+    config = load_config()
+    
+    # Get filename configuration
+    filename_format = get_config_value(config, "filename.format", None)
+    filename_extension = get_config_value(config, "filename.extension", None)
+    
+    dm = DataManager(
+        NOTES_DIR, 
+        INDEX_FILE, 
+        LOG_FILE_PATH, 
+        backup_interval_days=args.backup_interval,
+        filename_format=filename_format,
+        filename_extension=filename_extension
+    )
     if args.export_history or args.export_json:
         export_file = NOTES_DIR / ("workout_history." + ("json" if args.export_json else "csv"))
         if args.export_json:

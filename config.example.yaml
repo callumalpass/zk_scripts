@@ -53,3 +53,8 @@ personSearch:
 logging:
   level: "INFO"  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   file: "~/.zk_core.log"  # Log file path
+
+# Filename configuration
+filename:
+  format: "%Y%m%d{random:3}"  # Format for generated filenames; supports strftime and {random:N}
+  extension: ".md"  # File extension for generated files

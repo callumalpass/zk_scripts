@@ -18,6 +18,10 @@ DEFAULT_NOTES_DIR = "~/notes"
 DEFAULT_INDEX_FILENAME = "index.json"
 DEFAULT_LOG_LEVEL = "INFO"
 
+# Filename format constants
+DEFAULT_FILENAME_FORMAT = "%y%m%d{random:3}"
+DEFAULT_FILENAME_EXTENSION = ".md"
+
 # Index processing constants
 DEFAULT_NUM_WORKERS = 64
 MAX_CHUNK_SIZE = 1000

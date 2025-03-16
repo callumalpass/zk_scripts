@@ -23,7 +23,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import yaml
 
 from zk_core.config import load_config, get_config_value, resolve_path
-from zk_core.utils import extract_frontmatter_and_body
+from zk_core.utils import extract_frontmatter_and_body, generate_filename
 from zk_core.query import app as query_app
 
 # ANSI Colors for UI
@@ -120,8 +120,13 @@ def run_fzf(input_text: str, header: str = "", prompt: str = "",
     return proc.stdout.strip()
 
 def generate_random_suffix(n: int = 3) -> str:
-    """Generate a random string of lowercase letters."""
-    return "".join(random.choices(string.ascii_lowercase, k=n))
+    """Generate a random string of lowercase letters.
+    
+    Note: This function is kept for backward compatibility.
+    New code should use utils.generate_random_string() instead.
+    """
+    from zk_core.utils import generate_random_string
+    return generate_random_string(n)
 
 def get_title_from_llm_content(note_content: str, llm_cmd: str, llm_instruct: str) -> Optional[str]:
     """Generate title suggestions using an LLM."""
@@ -433,6 +438,10 @@ def main() -> None:
     index_file = get_config_value(config, "zk_fzf.index_file", os.path.join(notes_dir, "index.json"))
     index_file = resolve_path(index_file)
     
+    # Get filename configuration
+    filename_format = get_config_value(config, "filename.format", None)
+    filename_extension = get_config_value(config, "filename.extension", None)
+    
     # Make sure directories exist
     check_directories(notes_dir, working_mem_file)
 
@@ -491,12 +500,9 @@ def main() -> None:
         # In nvim mode we use the file already open in nvim
         note_path = Path(file_name)
     else:
-        # Create a new note file with date-based ID
-        now = datetime.datetime.now()
-        date_prefix = now.strftime("%y%m%d")
-        random_suffix = generate_random_suffix(3)
-        filename = f"{date_prefix}{random_suffix}.md"
-        note_path = Path(notes_dir) / filename
+        # Create a new note file with configured filename format
+        generated_filename = generate_filename(filename_format, filename_extension)
+        note_path = Path(notes_dir) / generated_filename
 
     # Write the note file with YAML frontmatter
     write_note_file(str(note_path), title, note_content)

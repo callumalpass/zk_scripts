@@ -26,9 +26,11 @@ It evolved from a collection of personal scripts into this organized package.
 
 ### Limitations
 
-The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values. Notes are currently created with my preferred filenaming format---"YYYYMMDDxxx.md", where xxx are random letters.
+The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values.
 
-There is currently no feature for the *creation* of notes (except of "working memory" notes). This has been avoided under the belief that template management is better managed by e.g. snippets in `neovim`.
+The default filename format is "YYYYMMDDxxx.md", where xxx are random letters, but this is now fully configurable through the config file (see the Configuration section below).
+
+There is currently no feature for the *creation* of notes (except of "working memory" notes). This has been avoided under the belief that template management is better managed by other tools; e.g. snippets in `neovim`.
 
 ## Installation
 
@@ -43,29 +45,100 @@ pip install .
 
 ## Configuration
 
-You'll need a configuration file at `~/.config/zk_scripts/config.yaml`. Here's an example:
+You'll need a configuration file at `~/.config/zk_scripts/config.yaml`. Here's a comprehensive example:
 
 ```yaml
-# Your notes directory
-notes_dir: "~/notes"
+# Main configuration
+notes_dir: "~/notes"  # Path to your notes directory
 
 # Indexing settings
 zk_index:
-  index_file: "index.json"
-  exclude_patterns: [".git", ".obsidian", "node_modules"]
+  index_file: "index.json"  # Name of the index file
+  exclude_patterns: [".git", ".obsidian", "node_modules"]  # Directories to exclude
+  excluded_files: ["README.md"]  # Files to exclude from indexing
 
-# Bibliography settings (for bibview)
+# Query configuration
+query:
+  default_index: "index.json"
+  default_fields: ["filename", "title", "tags"]
+
+# FZF interface configuration
+fzf_interface:
+  bat_command: "bat"  # Command for preview
+  fzf_args: "--height=80% --layout=reverse --info=inline"
+
+# Working memory configuration
+working_mem:
+  file: "~/notes/workingMem.md"  # Path to working memory file
+  editor: "nvim"
+  tag: "working_mem"
+
+# Backlinks configuration
+backlinks:
+  bat_theme: "Dracula"
+
+# Bibliography settings
 bibview:
   bibliography_json: "~/Dropbox/bibliography.json"
   library: "~/biblib"
+  notes_dir_for_zk: "~/notes"
+  bat_theme: "Dracula"
+  llm_path: "~/bin/llm"  # Path to LLM script (for AI-assisted features)
 
 # Person search settings
 personSearch:
-  notes_dir: "~/notes"
-  bat_command: "bat"  # Optional: for pretty-printed previews
+  bat_command: "bat"  # Command for preview
+
+# Filename configuration
+filename:
+  format: "%Y%m%d{random:3}"  # Format for generated filenames
+  extension: ".md"  # File extension for generated files
+
+# Global logging configuration
+logging:
+  level: "INFO"  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  file: "~/.zk_core.log"  # Log file path
 ```
 
-Adjust those paths to match your system.
+### Filename Configuration
+
+The `filename` section allows you to customize how new note filenames are generated. This applies to notes created by the working memory tool, workout logger, and other tools that create new files.
+
+The format supports:
+
+1. **Date/time formatting**: All standard [Python strftime format codes](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes), including:
+   - `%Y` - Four-digit year (e.g., 2025)
+   - `%y` - Two-digit year (e.g., 25)
+   - `%m` - Month as zero-padded decimal (01-12)
+   - `%d` - Day of the month as zero-padded decimal (01-31)
+   - `%H` - Hour (24-hour clock) as zero-padded decimal (00-23)
+   - `%M` - Minute as zero-padded decimal (00-59)
+
+2. **Random characters**: Use `{random:N}` where N is the number of random lowercase letters to generate.
+
+Some example formats:
+
+```yaml
+# Default format (YYYYMMDDxxx.md)
+format: "%Y%m%d{random:3}" 
+
+# ISO-style date with 4 random characters (2025-03-16_abcd.md)
+format: "%Y-%m-%d_{random:4}"
+
+# Two-digit year with timestamp and 6 random characters (250316-1423-abcdef.md)
+format: "%y%m%d-%H%M-{random:6}"
+
+# Prefixed notes with date (note-20250316-xyz.md)
+format: "note-%Y%m%d-{random:3}"
+```
+
+You can also customize the file extension:
+
+```yaml
+extension: ".md"  # Default
+# or
+extension: ".markdown"
+```
 
 ## Usage Examples
 

@@ -8,7 +8,10 @@ from typing import Dict, Any, Optional, List
 
 from pydantic import BaseModel, Field, validator
 
-from zk_core.constants import DEFAULT_CONFIG_PATH, DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME, DEFAULT_LOG_LEVEL
+from zk_core.constants import (
+    DEFAULT_CONFIG_PATH, DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME, 
+    DEFAULT_LOG_LEVEL, DEFAULT_FILENAME_FORMAT, DEFAULT_FILENAME_EXTENSION
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,39 @@ class LoggingConfig(BaseModel):
             return DEFAULT_LOG_LEVEL
         return v.upper()
 
+class FilenameConfig(BaseModel):
+    """Filename formatting configuration model."""
+    format: str = Field(
+        default=DEFAULT_FILENAME_FORMAT, 
+        description="Format string for generated filenames. Supports strftime format codes and {random:N} for random letters"
+    )
+    extension: str = Field(
+        default=DEFAULT_FILENAME_EXTENSION, 
+        description="File extension for generated files"
+    )
+    
+    @validator('format')
+    def validate_format(cls, v: str) -> str:
+        """Validate filename format."""
+        if not v:
+            logger.warning(f"Invalid filename format: {v}. Using default: {DEFAULT_FILENAME_FORMAT}")
+            return DEFAULT_FILENAME_FORMAT
+        return v
+    
+    @validator('extension')
+    def validate_extension(cls, v: str) -> str:
+        """Validate filename extension."""
+        if not v.startswith('.'):
+            v = '.' + v
+        return v
+
 class ZKConfig(BaseModel):
     """Main configuration model."""
     notes_dir: str = Field(default=DEFAULT_NOTES_DIR, description="Path to notes directory")
     zk_index: IndexConfig = Field(default_factory=IndexConfig, description="Index configuration")
     query: QueryConfig = Field(default_factory=QueryConfig, description="Query configuration")
     logging: LoggingConfig = Field(default_factory=LoggingConfig, description="Logging configuration")
+    filename: FilenameConfig = Field(default_factory=FilenameConfig, description="Filename formatting configuration")
     
     # Additional configuration sections can be added here
     
