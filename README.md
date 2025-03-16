@@ -21,7 +21,14 @@ It evolved from a collection of personal scripts into this organized package.
 
 -   **Bibliography Management:** Tools for managing references and integrating them with your notes for more academic workflows.
 -   **Person Search:** Quickly find notes related to specific people, useful for journaling or contact management.
+-   **Working Memory:** A tool for capturing thoughts and ideas quickly, with smart note creation and organization capabilities.
 -   **Workout Logger:** Track your workouts in markdown. Includes reporting capabilities.
+
+### Limitations
+
+The current implementation is somewhat opinionated about how a zettelkasten should be managed. The scripts in this package will work best when you have tags in the frontmatter and `dateCreated` and `dateModified` values. Notes are currently created with my preferred filenaming format---"YYYYMMDDxxx.md", where xxx are random letters.
+
+There is currently no feature for the *creation* of notes (except of "working memory" notes). This has been avoided under the belief that template management is better managed by e.g. snippets in `neovim`.
 
 ## Installation
 
@@ -208,8 +215,45 @@ This is the command center for navigating your notes. Quickly search, view backl
 `zk-working-mem` creates a temporary note to gather related thoughts:
 
 ```bash
-zk-working-mem
+zk-working-mem             # Standard note creation
+zk-working-mem -s          # Create a quick scratch note
+zk-working-mem -q          # Quick capture mode (append directly to working memory file)
+zk-working-mem --nvim      # Use content from current Neovim buffer
 ```
+
+#### Working Memory Tool in Detail
+
+The Working Memory tool (`zk-working-mem`) is designed to capture fleeting thoughts, ideas, and connections quickly, while integrating them into your Zettelkasten. It acts as a bridge between ephemeral thoughts and permanent notes.
+
+**Key Features:**
+
+- **Quick Capture:** Create notes without interrupting your workflow
+- **AI-Assisted Title Generation:** Automatically suggests relevant titles using LLMs (if configured)
+- **Tag Integration:** Select from existing tags in your Zettelkasten
+- **Working Memory File:** Maintains a linked index of all created notes
+- **Multiple Modes:**
+  - Standard mode for detailed notes
+  - Scratch mode for quick thoughts
+  - Journal mode for date-based entries
+  - Neovim integration for using existing buffer content
+
+**How It Works:**
+
+1. When you run `zk-working-mem`, it opens your preferred editor (default: nvim) for note writing
+2. After saving, it offers several options:
+   - Generate a title with an AI assistant
+   - Enter a title manually
+   - Use a "Scratch" title (timestamped)
+   - Use a "Journal" title (date-based)
+3. It then allows you to select relevant tags from your existing tag library
+4. The note is saved with proper frontmatter into your Zettelkasten
+5. A wikilink to the new note is appended to your working memory file
+
+This creates a powerful system for:
+- Capturing ideas that arise during work without losing context
+- Gradually developing fleeting thoughts into permanent notes
+- Maintaining awareness of your thinking process over time
+- Ensuring new notes are properly integrated with your knowledge system
 
 ### Backlinks
 
