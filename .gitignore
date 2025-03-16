@@ -1,0 +1,4 @@
+__pycache__
+build/lib/zk_core
+node_modules
+zk_core.egg-info
