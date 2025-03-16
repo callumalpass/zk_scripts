@@ -342,7 +342,7 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
         'json': ['filename', 'title', 'tags', 'dateModified', 'dateCreated', 'aliases', 'givenName', 'familyName',
                  'outgoing_links', 'backlinks', 'word_count', 'file_size']
     }
-    effective_fields = fields if fields else default_fields_map.get(output_format, ['filename', 'title', 'tags'])
+    effective_fields = fields if fields is not None else default_fields_map.get(output_format, ['filename', 'title', 'tags'])
     match output_format:
         case 'json':
             return format_json(notes)
@@ -516,12 +516,21 @@ def main(ctx: typer.Context,
 @app.command(name="info")
 def info(
     ctx: typer.Context,
-    index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
+    index_file: Optional[Path] = typer.Option(None, "-i", help="Path to index JSON file."),
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
 ):
     """
     Display detailed information about the index file.
     """
+    config = ctx.obj.get("config", {})
+    
+    # Get default index from config if not specified
+    if index_file is None:
+        default_index = get_config_value(config, "query.default_index", "index.json")
+        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        index_file = Path(os.path.join(notes_dir, default_index))
+        logger.debug(f"Using default index file from config: {index_file}")
+    
     notes = get_cached_notes(ctx, index_file)
     info_data = get_index_info(index_file, notes)
     note_count = info_data.note_count
@@ -599,7 +608,7 @@ def info(
 @app.command(name="list")
 def list_(
     ctx: typer.Context,
-    index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
+    index_file: Optional[Path] = typer.Option(None, "-i", help="Path to index JSON file."),
     mode: str = typer.Option("notes", "--mode", help="Display mode: notes, unique-tags, orphans, dangling-links."),
     output_format: Optional[str] = typer.Option(None, "-o", help="Output format: plain, csv, json, table."),
     fields: Optional[List[str]] = typer.Option(None, help="Fields to include in output."),
@@ -625,6 +634,20 @@ def list_(
     """
     List notes or note metadata based on various criteria.
     """
+    config = ctx.obj.get("config", {})
+    
+    # Get default index from config if not specified
+    if index_file is None:
+        default_index = get_config_value(config, "query.default_index", "index.json")
+        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        index_file = Path(os.path.join(notes_dir, default_index))
+        logger.debug(f"Using default index file from config: {index_file}")
+    
+    # Use default fields from config if not specified
+    if fields is None:
+        fields = get_config_value(config, "query.default_fields", ["filename", "title", "tags"])
+        logger.debug(f"Using default fields from config: {fields}")
+    
     output_format = merge_config_option(ctx, output_format, "output_format", "plain")
     separator = merge_config_option(ctx, separator, "separator", "::")
     color = merge_config_option(ctx, color, "color", "auto")
@@ -693,7 +716,7 @@ def list_(
 @app.command(name="search-embeddings")
 def search_embeddings(
     ctx: typer.Context,
-    index_file: Path = typer.Option(..., "-i", help="Path to index JSON file."),
+    index_file: Optional[Path] = typer.Option(None, "-i", help="Path to index JSON file."),
     query_file: Optional[Path] = typer.Argument(None, help="Path to the note file to search similar ones for."),
     embeddings_file: Optional[Path] = typer.Option(None, "--embeddings", help="Path to embeddings JSON file. Default: {index_file.parent}/embeddings.json"),
     embedding_model: str = typer.Option("text-embedding-3-small", "--embedding-model", help="OpenAI embedding model to use."),
@@ -703,6 +726,15 @@ def search_embeddings(
     """
     Search for similar notes using OpenAI embeddings.
     """
+    config = ctx.obj.get("config", {})
+    
+    # Get default index from config if not specified
+    if index_file is None:
+        default_index = get_config_value(config, "query.default_index", "index.json")
+        notes_dir = get_config_value(config, "notes_dir", os.path.expanduser("~/notes"))
+        index_file = Path(os.path.join(notes_dir, default_index))
+        logger.debug(f"Using default index file from config: {index_file}")
+        
     # Determine default for embeddings file if not set.
     if not embeddings_file:
         embeddings_file = index_file.parent / "embeddings.json"
