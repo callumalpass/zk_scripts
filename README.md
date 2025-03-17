@@ -4,7 +4,7 @@ A Python toolkit for Zettelkasten note-taking.
 
 ## What is it?
 
-ZK Core is a set of Python tools designed to help you manage your markdown-based Zettelkasten notes. It provides a modular collection of utilities for indexing, searching, navigating, and connecting your notes, along with a few extra tools for specialized tasks. 
+ZK Core is a set of Python tools designed around a super fast indexing system to help you manage your markdown-based Zettelkasten notes. It provides a modular collection of utilities for indexing, searching, navigating, and connecting your notes, along with a few extra tools for specialized tasks. 
 
 It evolved from a collection of personal scripts into this organized package.
 
@@ -43,7 +43,7 @@ pip install .
 
 ## Configuration
 
-You'll need a configuration file at `~/.config/zk_scripts/config.yaml`. Here's a comprehensive example:
+You'll need a configuration file at `~/.config/zk_scripts/config.yaml`.
 
 ```yaml
 # ZK Core Example Configuration
@@ -298,8 +298,6 @@ zk-working-mem -s          # Create a quick scratch note
 zk-working-mem -q          # Quick capture mode (append directly to working memory file)
 zk-working-mem --nvim      # Use content from current Neovim buffer
 ```
-
-#### Working Memory Tool in Detail
 
 The Working Memory tool (`zk-working-mem`) is designed to capture fleeting thoughts, ideas, and connections quickly, while integrating them into your Zettelkasten. 
 
