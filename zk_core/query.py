@@ -369,65 +369,6 @@ def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
     }
     if sort_by in sort_options:
         key_func, reverse = sort_options[sort_by]
-        return sorted(notes, key=key_func, reverse=reverse)
-    else:
-        logger.warning(f"Sort field '{sort_by}' not recognized. Returning unsorted notes.")
-        return notes
-
-# --- Index Information ---
-
-def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
-    """Get detailed information about the index."""
-    info = IndexInfo()
-    try:
-        note_count = len(notes)
-        info.note_count = note_count
-
-        # Collect tag and word/file size info
-        all_tags: List[str] = []
-        tag_counter = Counter()
-        total_word_count = 0
-        total_file_size = 0
-        word_counts = []
-        file_sizes = []
-        tag_counts = []  # track number of tags per note
-        tag_pairs = []  # track co-occurring tags
-        orphan_count = 0
-        untagged_orphan_count = 0
-        dates = []
-        creation_dates = []
-        extra_fields_counter = Counter()
-
-        # Counters for creation dates
-        creation_day_counter = Counter()
-        creation_year_counter = Counter()
-        creation_month_counter = Counter()
-        
-        # Network and connectivity metrics
-        total_links = 0
-        outgoing_links_counts = []
-        backlinks_counts = []
-        highly_connected_notes = []
-        citation_rich_notes = []
-        
-        # Reference and alias tracking
-        reference_counts = []
-        alias_counts = []
-        
-        # Word count distribution buckets
-        word_count_dist = {
-            "tiny (1-100)": 0,
-            "small (101-250)": 0,
-            "medium (251-500)": 0,
-            "large (501-1000)": 0,
-            "huge (1001+)": 0
-        }
-        
-        # Collect nodes and edges for network analysis
-        note_connections = {}  # Maps note filename to list of connected note filenames
-        
-        # Tracking for best/worst notes
-        notes_with_metadata = []
         
         # Month names for readable output
         month_names = list(calendar.month_name)[1:]  # Skip empty first item
