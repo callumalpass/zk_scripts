@@ -60,40 +60,13 @@ def build_person_search_fzf_manager(notes_dir: str, bat_command: str) -> FzfMana
     ])
     
     # Add help binding
-    manager.add_help_binding("person-search")
+    manager.add_help_binding("zk-person-search")
     
     return manager
 
 
 from zk_core.commands import CommandExecutor
-
-
-def print_hotkeys(fzf_manager: FzfManager) -> None:
-    """
-    Print the key bindings and their actions.
-    
-    Args:
-        fzf_manager: The FzfManager instance with all bindings
-    """
-    print("\033[1;36m=== PERSON SEARCH KEYBOARD SHORTCUTS ===\033[0m")
-    
-    # Group bindings by category
-    categories = {}
-    for binding in fzf_manager.bindings:
-        if binding.category not in categories:
-            categories[binding.category] = []
-        categories[binding.category].append(binding)
-    
-    # Print bindings by category
-    for category, bindings in sorted(categories.items()):
-        if not bindings:
-            continue
-            
-        print(f"\n\033[1;33m{category}:\033[0m")
-        for binding in sorted(bindings, key=lambda b: b.key):
-            print(f"\033[36m{binding.key:<10}\033[0m : \033[3m{binding.desc}\033[0m")
-    
-    print("\n\033[1;36mPress q to exit this help screen\033[0m")
+from zk_core.fzf_utils import FzfHelper
 
 
 def main() -> None:
@@ -126,7 +99,7 @@ def main() -> None:
     
     # If --list-hotkeys was specified, print the hotkey help and exit
     if args.list_hotkeys:
-        print_hotkeys(fzf_manager)
+        FzfHelper.print_hotkeys(fzf_manager, "PERSON SEARCH KEYBOARD SHORTCUTS")
         sys.exit(0)
     
     # Change to notes directory

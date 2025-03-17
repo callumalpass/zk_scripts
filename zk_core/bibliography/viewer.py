@@ -283,7 +283,7 @@ def build_bibview_fzf_manager(
         )
     
     # Add help binding
-    manager.add_help_binding("bibview")
+    manager.add_help_binding("zk-bib-view")
     
     return manager
 
@@ -464,7 +464,7 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[argparse.
     
     # If --list-hotkeys was specified, print the hotkey help and exit
     if args.list_hotkeys:
-        FzfHelper.print_hotkeys(fzf_manager, "BIBVIEW KEYBOARD SHORTCUTS")
+        FzfHelper.print_hotkeys(fzf_manager, "BIBLIOGRAPHY VIEWER KEYBOARD SHORTCUTS")
         return 0
         
     # Build the gojq command based on sort order
