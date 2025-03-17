@@ -1,0 +1,29 @@
+[
+  {
+    "filename": "test1.md",
+    "title": "Test 1",
+    "tags": ["foo", "test"],
+    "outgoing_links": [],
+    "backlinks": [],
+    "word_count": 100,
+    "file_size": 1000
+  },
+  {
+    "filename": "test2.md",
+    "title": "Test 2",
+    "tags": ["bar", "test"],
+    "outgoing_links": [],
+    "backlinks": [],
+    "word_count": 200,
+    "file_size": 2000
+  },
+  {
+    "filename": "test3.md",
+    "title": "Test 3",
+    "tags": ["foo/child", "test"],
+    "outgoing_links": [],
+    "backlinks": [],
+    "word_count": 300,
+    "file_size": 3000
+  }
+]

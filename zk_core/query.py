@@ -10,24 +10,24 @@ import json
 import logging
 import datetime
 import re
-import calendar
 import csv
-import numpy as np
 from io import StringIO
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Set
-from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 import typer
 import yaml
 import openai
+import numpy as np
 from tabulate import tabulate
 
 from zk_core.models import Note, IndexInfo
 from zk_core.config import load_config, get_config_value, resolve_path
-from zk_core.constants import DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME
+from zk_core.constants import DEFAULT_NOTES_DIR, DEFAULT_INDEX_FILENAME, DEFAULT_NUM_WORKERS
 from zk_core.utils import load_json_file, save_json_file
+from zk_core.analytics import get_index_info, find_dangling_links, parse_iso_datetime
 
 # Try to import orjson for faster JSON processing
 try:
@@ -67,20 +67,6 @@ def merge_config_option(ctx: typer.Context, cli_value: Optional[Any], key: str, 
     config = ctx.obj.get("config", {}) if ctx.obj else {}
     return cli_value if cli_value is not None else config.get(key, default)
 
-def parse_iso_datetime(dt_str: str) -> Optional[datetime.datetime]:
-    """Parse ISO format datetime string."""
-    if not dt_str:
-        return None
-    try:
-        if dt_str.endswith('Z'):
-            dt_str = dt_str[:-1]
-        dt = datetime.datetime.fromisoformat(dt_str)
-        if dt.tzinfo is not None:
-            dt = dt.replace(tzinfo=None)
-        return dt
-    except ValueError:
-        return None
-
 def _fast_json_loads(json_bytes: bytes) -> Any:
     """Load JSON data quickly using orjson if available."""
     if orjson:
@@ -115,27 +101,167 @@ def get_cached_notes(ctx: typer.Context, index_file: Path) -> List[Note]:
         ctx.obj['notes_cache'] = {}
     cache_key = str(index_file.resolve())
     if cache_key not in ctx.obj['notes_cache']:
+        start_time = time.time()
         ctx.obj['notes_cache'][cache_key] = load_index_data(index_file)
+        load_time = time.time() - start_time
+        logger.debug(f"Loaded {len(ctx.obj['notes_cache'][cache_key])} notes in {load_time:.2f} seconds")
+        
+        # Create an index of filename to note for quick lookups
+        if 'notes_indices' not in ctx.obj:
+            ctx.obj['notes_indices'] = {}
+        ctx.obj['notes_indices'][cache_key] = {note.filename: note for note in ctx.obj['notes_cache'][cache_key]}
+        
+        # Create tag index for faster filtering
+        if 'tag_indices' not in ctx.obj:
+            ctx.obj['tag_indices'] = {}
+        tag_index = {}
+        for note in ctx.obj['notes_cache'][cache_key]:
+            for tag in note.tags:
+                if tag not in tag_index:
+                    tag_index[tag] = []
+                tag_index[tag].append(note)
+        ctx.obj['tag_indices'][cache_key] = tag_index
+    
     return ctx.obj['notes_cache'][cache_key]
 
 # --- Filtering Functions ---
 
+def filter_by_tag_optimized(ctx: typer.Context, index_file: Path, tags: List[str], tag_mode: str = 'and', exclude_tags: Optional[List[str]] = None) -> List[Note]:
+    """Filter notes by tag inclusion and exclusion using the tag index for better performance."""
+    # If no tags and no exclusions, return all notes
+    if not tags and not exclude_tags:
+        return get_cached_notes(ctx, index_file)
+    
+    # Fall back to regular filtering if tag index is not available
+    if 'tag_indices' not in ctx.obj or str(index_file.resolve()) not in ctx.obj['tag_indices']:
+        logger.debug("Tag index not available, falling back to regular filtering")
+        return filter_by_tag(get_cached_notes(ctx, index_file), tags, tag_mode, exclude_tags)
+    
+    tag_index = ctx.obj['tag_indices'][str(index_file.resolve())]
+    notes = get_cached_notes(ctx, index_file)
+    
+    # Use set operations for better performance
+    filter_tags = set(tags)
+    exclude_set = set(exclude_tags) if exclude_tags else set()
+    
+    # Special case: only exclusions, no inclusion filters
+    if not filter_tags and exclude_set:
+        all_notes = set(notes)
+        for ex_tag in exclude_set:
+            # Collect all notes with excluded tag (including hierarchical)
+            excluded_notes = set()
+            # Direct matches
+            if ex_tag in tag_index:
+                excluded_notes.update(tag_index[ex_tag])
+            
+            # Hierarchical matches (notes with tags that start with ex_tag/)
+            ex_prefix = f"{ex_tag}/"
+            for indexed_tag, notes_with_tag in tag_index.items():
+                if indexed_tag.startswith(ex_prefix):
+                    excluded_notes.update(notes_with_tag)
+            
+            # Remove excluded notes from result set
+            all_notes.difference_update(excluded_notes)
+        
+        return list(all_notes)
+    
+    # Get candidates based on tag mode
+    if tag_mode == 'or':
+        # Notes that have any of the tags (including hierarchical)
+        candidates = set()
+        for tag in filter_tags:
+            # Direct tag matches
+            if tag in tag_index:
+                candidates.update(tag_index[tag])
+                
+            # Hierarchical matches (include notes with tags that start with tag/)
+            tag_prefix = f"{tag}/"
+            for indexed_tag, notes_with_tag in tag_index.items():
+                if indexed_tag.startswith(tag_prefix):
+                    candidates.update(notes_with_tag)
+    else:  # 'and' mode
+        if not filter_tags:  # Empty filter tags with 'and' mode
+            candidates = set(notes)
+        else:
+            # For each filter tag, collect matching notes
+            tag_matches_by_filter = []
+            for tag in filter_tags:
+                tag_matches = set()
+                # Direct tag matches
+                if tag in tag_index:
+                    tag_matches.update(tag_index[tag])
+                
+                # Hierarchical matches (include notes with tags that start with tag/)
+                tag_prefix = f"{tag}/"
+                for indexed_tag, notes_with_tag in tag_index.items():
+                    if indexed_tag.startswith(tag_prefix):
+                        tag_matches.update(notes_with_tag)
+                
+                tag_matches_by_filter.append(tag_matches)
+            
+            # In AND mode, notes must match ALL filter criteria
+            # Start with all matches for the first filter
+            candidates = tag_matches_by_filter[0] if tag_matches_by_filter else set()
+            # Intersect with matches for each additional filter
+            for matches in tag_matches_by_filter[1:]:
+                candidates.intersection_update(matches)
+    
+    # Exclude tags if necessary
+    if exclude_set:
+        filtered_notes = []
+        for note in candidates:
+            exclude_this_note = False
+            note_tags = note.tags
+            # Check if any of note's tags match exclude patterns
+            for ex_tag in exclude_set:
+                # Direct match
+                if ex_tag in note_tags:
+                    exclude_this_note = True
+                    break
+                # Hierarchical match (note tag starts with ex_tag/)
+                ex_prefix = f"{ex_tag}/"
+                for note_tag in note_tags:
+                    if note_tag.startswith(ex_prefix):
+                        exclude_this_note = True
+                        break
+                if exclude_this_note:
+                    break
+            
+            if not exclude_this_note:
+                filtered_notes.append(note)
+        return filtered_notes
+    else:
+        return list(candidates)
+
 def filter_by_tag(notes: List[Note], tags: List[str], tag_mode: str = 'and', exclude_tags: Optional[List[str]] = None) -> List[Note]:
     """Filter notes by tag inclusion and exclusion."""
+    if not tags and not exclude_tags:
+        return notes
+        
     filtered_notes = []
     filter_tags = set(tags)
     exclude_set = set(exclude_tags) if exclude_tags else set()
+    
     for note in notes:
         note_tags = set(note.tags)
+        
+        # Skip early if we're excluding tags and any match
+        if exclude_set and exclude_set.intersection(note_tags):
+            continue
+        
+        # Check tag inclusion based on mode
+        if not filter_tags:  # No tags to filter on, only exclusions
+            filtered_notes.append(note)
+            continue
+            
         if tag_mode == 'or':
             include = any(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
-        elif tag_mode == 'and':
+        else:  # default to 'and'
             include = all(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
-        else:
-            logger.error(f"Invalid tag_mode: '{tag_mode}'. Defaulting to 'and'.")
-            include = all(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
-        if include and not exclude_set.intersection(note_tags):
+        
+        if include:
             filtered_notes.append(note)
+    
     return filtered_notes
 
 def filter_by_filenames_stdin(notes: List[Note]) -> List[Note]:
@@ -144,38 +270,58 @@ def filter_by_filenames_stdin(notes: List[Note]) -> List[Note]:
     if not filenames:
         typer.echo("Usage: ls <filename list> | script --stdin", err=True)
         raise typer.Exit(1)
-    return [note for note in notes if note.filename in filenames]
+        
+    # Use set for O(1) lookups
+    filename_set = set(filenames)
+    return [note for note in notes if note.filename in filename_set]
 
 def filter_by_filename_contains(notes: List[Note], substring: str) -> List[Note]:
     """Filter notes by substring in filename."""
-    return [note for note in notes if substring in note.filename]
+    return [note for note in notes if substring.lower() in note.filename.lower()]
 
 def filter_by_date_range(notes: List[Note], start_date_str: Optional[str] = None, end_date_str: Optional[str] = None) -> List[Note]:
     """Filter notes by date range."""
+    if not start_date_str and not end_date_str:
+        return notes
+        
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date() if start_date_str else None
         end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date() if end_date_str else None
     except ValueError:
         logger.error("Invalid date format (expected YYYY-MM-DD).")
         return []
+    
+    # Use ThreadPoolExecutor for better performance with date parsing
     filtered = []
-    for note in notes:
-        # Default filtering by dateModified:
-        if note.dateModified:
-            note_dt = parse_iso_datetime(note.dateModified)
+    with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+        # Create futures for parsing dates
+        futures = {}
+        for i, note in enumerate(notes):
+            if note.dateModified:
+                futures[executor.submit(parse_iso_datetime, note.dateModified)] = (i, note)
+        
+        # Process results as they complete
+        for future in as_completed(futures):
+            i, note = futures[future]
+            note_dt = future.result()
             if not note_dt:
-                logger.warning(f"Could not parse dateModified for '{note.filename}'")
+                logger.debug(f"Could not parse dateModified for '{note.filename}'")
                 continue
+                
             note_date = note_dt.date()
             if start_date and note_date < start_date:
                 continue
             if end_date and note_date > end_date:
                 continue
             filtered.append(note)
+    
     return filtered
 
 def filter_by_word_count_range(notes: List[Note], min_word_count: Optional[int] = None, max_word_count: Optional[int] = None) -> List[Note]:
     """Filter notes by word count range."""
+    if min_word_count is None and max_word_count is None:
+        return notes
+        
     return [
         note for note in notes
         if (min_word_count is None or note.word_count >= min_word_count)
@@ -197,21 +343,6 @@ def filter_orphan_notes(notes: List[Note]) -> List[Note]:
 def filter_untagged_orphan_notes(notes: List[Note]) -> List[Note]:
     """Filter to orphan notes with no tags."""
     return [note for note in filter_orphan_notes(notes) if not note.tags]
-
-def find_dangling_links(notes: List[Note]) -> Dict[str, List[str]]:
-    """Find links to non-existent notes."""
-    indexed = {note.filename for note in notes}
-    dangling: Dict[str, List[str]] = {}
-    for note in notes:
-        missing = []
-        for target in note.outgoing_links:
-            base_target = target.split('#')[0]
-            if not (base_target.startswith("biblib/") and base_target.lower().endswith(".pdf")):
-                if target not in indexed:
-                    missing.append(target)
-        if missing:
-            dangling[note.filename] = missing
-    return dangling
 
 # --- Output Formatting ---
 
@@ -247,6 +378,32 @@ def format_plain(notes: List[Note], fields: List[str], separator: str = '::',
     """Format notes as plain text."""
     lines = []
     color_cycle = PLAIN_OUTPUT_COLORS if use_color else [None] * len(PLAIN_OUTPUT_COLORS)
+    
+    # For large result sets, use parallel processing
+    if len(notes) > 1000 and not format_string:
+        # Pre-compute field indices for the ThreadPoolExecutor
+        field_indices = {field: idx for idx, field in enumerate(fields)}
+        
+        # Function to format a single note
+        def format_note(note: Note) -> str:
+            vals = []
+            for field in fields:
+                value = get_field_value(note, field)
+                if use_color:
+                    idx = field_indices.get(field, 0)
+                    value = colorize(value, color_cycle[idx % len(color_cycle)])
+                vals.append(value)
+            line = separator.join(vals)
+            if use_color:
+                line = colorize(line, 'yellow')
+            return line
+        
+        # Use ThreadPoolExecutor to parallelize formatting
+        with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+            lines = list(executor.map(format_note, notes))
+        return lines
+    
+    # Regular processing for smaller result sets or custom format strings
     if format_string:
         parsed = parse_format_string(format_string)
         for note in notes:
@@ -286,23 +443,69 @@ def format_csv(notes: List[Note], fields: List[str]) -> str:
     out = StringIO()
     writer = csv.writer(out)
     writer.writerow(fields)
-    for note in notes:
-        writer.writerow([get_field_value(note, field) for field in fields])
+    
+    # For large result sets, use bulk processing
+    if len(notes) > 1000:
+        # Pre-compute all field values in bulk
+        all_values = []
+        with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+            # Create a function to process one note
+            def process_note(note: Note) -> List[str]:
+                return [get_field_value(note, field) for field in fields]
+            
+            # Process all notes in parallel
+            all_values = list(executor.map(process_note, notes))
+        
+        # Write all rows at once
+        writer.writerows(all_values)
+    else:
+        # Regular processing for smaller result sets
+        for note in notes:
+            writer.writerow([get_field_value(note, field) for field in fields])
+    
     return out.getvalue()
 
 def format_table(notes: List[Note], fields: List[str], use_color: bool = False) -> str:
     """Format notes as a table."""
-    table_data = [[get_field_value(note, field) for field in fields] for note in notes]
+    # For large result sets, use parallel processing to extract field values
+    if len(notes) > 1000:
+        with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+            # Function to process a single note
+            def get_note_values(note: Note) -> List[str]:
+                return [get_field_value(note, field) for field in fields]
+                
+            # Process all notes in parallel
+            table_data = list(executor.map(get_note_values, notes))
+    else:
+        table_data = [[get_field_value(note, field) for field in fields] for note in notes]
+    
     headers = fields.copy()
     if use_color:
         headers = [colorize(h, 'cyan') for h in headers]
+    
     return tabulate(table_data, headers=headers, tablefmt="grid")
 
 def format_json(notes: List[Note]) -> str:
     """Format notes as JSON."""
-    notes_list = []
-    for note in notes:
-        notes_list.append(note.to_dict())
+    # For large result sets, use chunked processing to avoid memory issues
+    if len(notes) > 1000:
+        chunk_size = 500
+        chunks = [notes[i:i + chunk_size] for i in range(0, len(notes), chunk_size)]
+        
+        # Process chunks in parallel
+        with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+            # Function to process a chunk of notes
+            def process_chunk(chunk: List[Note]) -> List[Dict[str, Any]]:
+                return [note.to_dict() for note in chunk]
+                
+            # Process all chunks and combine results
+            results = list(executor.map(process_chunk, chunks))
+            
+        # Flatten the list of chunks
+        notes_list = [note_dict for chunk_result in results for note_dict in chunk_result]
+    else:
+        notes_list = [note.to_dict() for note in notes]
+    
     return _fast_json_dumps(notes_list)
 
 def format_dangling_links_output(d_map: Dict[str, List[str]], output_format: str = 'plain', use_color: bool = False) -> str:
@@ -344,350 +547,80 @@ def format_output(notes: List[Note], output_format: str = 'plain', fields: Optio
                  'outgoing_links', 'backlinks', 'word_count', 'file_size']
     }
     effective_fields = fields if fields is not None else default_fields_map.get(output_format, ['filename', 'title', 'tags'])
+    
+    # Log performance data for large result sets
+    if len(notes) > 1000:
+        logger.debug(f"Formatting {len(notes)} notes as {output_format}")
+        start_time = time.time()
+    
+    result = ""
     match output_format:
         case 'json':
-            return format_json(notes)
+            result = format_json(notes)
         case 'csv':
-            return format_csv(notes, effective_fields)
+            result = format_csv(notes, effective_fields)
         case 'table':
-            return format_table(notes, effective_fields, use_color)
+            result = format_table(notes, effective_fields, use_color)
         case _:
             lines = format_plain(notes, effective_fields, separator, format_string, use_color)
-            return "\n".join(lines)
+            result = "\n".join(lines)
+    
+    # Log performance data
+    if len(notes) > 1000:
+        logger.debug(f"Formatted {len(notes)} notes in {time.time() - start_time:.2f} seconds")
+    
+    return result
 
 # --- Sorting ---
 
 def sort_notes(notes: List[Note], sort_by: str = 'dateModified') -> List[Note]:
     """Sort notes by a field."""
+    if not notes or len(notes) <= 1:
+        return notes
+        
     sort_options = {
-        'filename': (lambda n: n.filename, False),
-        'title': (lambda n: n.title, False),
+        'filename': (lambda n: n.filename.lower(), False),  # Case-insensitive sorting
+        'title': (lambda n: (n.title or "").lower(), False),  # Case-insensitive and None-safe
         'dateModified': (lambda n: parse_iso_datetime(n.dateModified) or datetime.datetime.min, True),
         'word_count': (lambda n: n.word_count, True),
         'file_size': (lambda n: n.file_size, True),
         'dateCreated': (lambda n: parse_iso_datetime(n.dateCreated) or datetime.datetime.min, True)
     }
+    
     if sort_by in sort_options:
         key_func, reverse = sort_options[sort_by]
         
-        # Month names for readable output
-        month_names = list(calendar.month_name)[1:]  # Skip empty first item
-        today = datetime.datetime.now().date()
+        # Pre-compute sort keys for better performance, especially for date parsing
+        start_time = time.time()
         
-        # Word count by month
-        word_count_by_month = Counter()
-
-        for note in notes:
-            # Collect metadata for sorting later
-            note_meta = {
-                "filename": note.filename,
-                "word_count": note.word_count,
-                "outgoing_links": len(note.outgoing_links),
-                "backlinks": len(note.backlinks),
-                "references": len(note.references),
-                "created": None,
-                "modified": None,
-                "tags": len(note.tags),
-                "connections": len(note.outgoing_links) + len(note.backlinks)
-            }
-            
-            # Count tags per note
-            tag_count = len(note.tags)
-            tag_counts.append(tag_count)
-            all_tags.extend(note.tags)
-            tag_counter.update(note.tags)
-            
-            # Track tag co-occurrences
-            if len(note.tags) >= 2:
-                for i, tag1 in enumerate(note.tags):
-                    for tag2 in note.tags[i+1:]:
-                        tag_pairs.append((tag1, tag2))
-            
-            # Extra frontmatter keys
-            for key in note._extra_fields.keys():
-                extra_fields_counter[key] += 1
+        # For date fields, use ThreadPoolExecutor to parallelize date parsing
+        if sort_by in ['dateModified', 'dateCreated'] and len(notes) > 1000:
+            with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+                # Function to compute sort key for a note
+                def compute_sort_key(i_note: tuple) -> tuple:
+                    i, note = i_note
+                    return (i, key_func(note))
                 
-            # Word count and file size
-            total_word_count += note.word_count
-            total_file_size += note.file_size
-            word_counts.append(note.word_count)
-            file_sizes.append(note.file_size)
-            
-            # Word count distribution
-            wc = note.word_count
-            if wc <= 100:
-                word_count_dist["tiny (1-100)"] += 1
-            elif wc <= 250:
-                word_count_dist["small (101-250)"] += 1
-            elif wc <= 500:
-                word_count_dist["medium (251-500)"] += 1
-            elif wc <= 1000:
-                word_count_dist["large (501-1000)"] += 1
-            else:
-                word_count_dist["huge (1001+)"] += 1
+                # Compute sort keys in parallel
+                sort_keys = list(executor.map(compute_sort_key, enumerate(notes)))
                 
-            # Modification date
-            if note.dateModified:
-                dt = parse_iso_datetime(note.dateModified)
-                if dt:
-                    dates.append(dt.date())
-                    note_meta["modified"] = dt.date()
-                else:
-                    logger.warning(f"Could not parse dateModified for '{note.filename}'")
-            
-            # Creation date
-            dt_created = parse_iso_datetime(note.dateCreated)
-            if dt_created:
-                creation_dates.append(dt_created.date())
-                note_meta["created"] = dt_created.date()
+                # Sort by the computed keys
+                sort_keys.sort(key=lambda x: x[1], reverse=reverse)
                 
-                # Add words to month counter
-                month_key = f"{dt_created.year}-{dt_created.month:02d}"
-                word_count_by_month[month_key] += note.word_count
-            elif note.dateModified:
-                dt_mod = parse_iso_datetime(note.dateModified)
-                if dt_mod:
-                    note_meta["created"] = dt_mod.date()
-                    
-            # For orphan metrics
-            if not note.outgoing_links and not note.backlinks:
-                orphan_count += 1
-                if not note.tags:
-                    untagged_orphan_count += 1
-            
-            # Track network metrics
-            outgoing_count = len(note.outgoing_links)
-            backlink_count = len(note.backlinks)
-            total_links += outgoing_count
-            outgoing_links_counts.append(outgoing_count)
-            backlinks_counts.append(backlink_count)
-            
-            # Store connections for network analysis
-            note_connections[note.filename] = note.outgoing_links
-            
-            # Track highly connected notes
-            total_connections = outgoing_count + backlink_count
-            if total_connections > 10:  # arbitrary threshold for "highly connected"
-                highly_connected_notes.append((note.filename, total_connections))
-            
-            # Track references and aliases
-            ref_count = len(note.references)
-            reference_counts.append(ref_count)
-            alias_counts.append(len(note.aliases))
-            
-            # Find citation-rich notes
-            if ref_count > 5:  # arbitrary threshold
-                citation_rich_notes.append((note.filename, ref_count))
-
-            # Determine creation date for statistics
-            dt_created = parse_iso_datetime(note.dateCreated)
-            if not dt_created:
-                dt_created = parse_iso_datetime(note.dateModified)
-            if dt_created:
-                creation_day_counter[dt_created.strftime("%A")] += 1
-                creation_year_counter[dt_created.year] += 1
-                creation_month_counter[dt_created.month] += 1
-            
-            # Add to metadata collection
-            notes_with_metadata.append(note_meta)
-            
-        # Calculate statistics
-        info.total_word_count = total_word_count
-        info.average_word_count = total_word_count / note_count if note_count else 0
-        info.median_word_count = float(np.median(word_counts)) if word_counts else 0
-        info.min_word_count = min(word_counts) if word_counts else 0
-        info.max_word_count = max(word_counts) if word_counts else 0
-        
-        info.total_file_size_bytes = total_file_size
-        info.average_file_size_bytes = total_file_size / note_count if note_count else 0
-        info.median_file_size_bytes = float(np.median(file_sizes)) if file_sizes else 0
-        info.min_file_size_bytes = min(file_sizes) if file_sizes else 0
-        info.max_file_size_bytes = max(file_sizes) if file_sizes else 0
-        
-        info.average_tags_per_note = sum(tag_counts) / note_count if note_count else 0
-        info.median_tags_per_note = float(np.median(tag_counts)) if tag_counts else 0
-        
-        info.orphan_notes_count = orphan_count
-        info.untagged_orphan_notes_count = untagged_orphan_count
-        
-        if dates:
-            min_date = min(dates)
-            max_date = max(dates)
-            info.date_range = f"{min_date} to {max_date}"
-            
-        info.dangling_links_count = sum(len(links) for links in find_dangling_links(notes).values())
-        info.unique_tag_count = len(tag_counter.keys())
-        info.most_common_tags = tag_counter.most_common(10)
-        
-        info.extra_frontmatter_keys = list(extra_fields_counter.most_common())
-        
-        # Day of week distribution
-        days_order = list(calendar.day_name)
-        info.notes_by_day_of_week = {day: creation_day_counter.get(day, 0) for day in days_order}
-        
-        # Peak creation day
-        if creation_day_counter:
-            peak_day, peak_count = creation_day_counter.most_common(1)[0]
-            info.peak_creation_day = f"{peak_day} ({peak_count} notes)"
-            
-        # Distribution by year
-        info.notes_by_year = dict(sorted(creation_year_counter.items()))
-        
-        # Network metrics
-        info.total_links = total_links
-        info.average_outgoing_links = sum(outgoing_links_counts) / note_count if note_count else 0
-        info.median_outgoing_links = float(np.median(outgoing_links_counts)) if outgoing_links_counts else 0
-        info.average_backlinks = sum(backlinks_counts) / note_count if note_count else 0
-        info.median_backlinks = float(np.median(backlinks_counts)) if backlinks_counts else 0
-        info.highly_connected_notes = sorted(highly_connected_notes, key=lambda x: x[1], reverse=True)[:5]
-        
-        # Calculate network density (ratio of actual connections to possible connections)
-        possible_connections = note_count * (note_count - 1)
-        if possible_connections > 0:
-            info.network_density = total_links / possible_connections
-        
-        # Identify bridge notes - approximate with notes having both incoming and outgoing links to different sets of notes
-        bridge_candidates = []
-        for note in notes:
-            # Check if this note connects different parts of the network
-            if note.outgoing_links and note.backlinks:
-                # Calculate the overlap between outgoing links and backlinks
-                outgoing_set = set(note.outgoing_links)
-                backlink_set = set(note.backlinks)
-                # If there's little overlap and sufficient links, consider it a bridge
-                overlap = len(outgoing_set.intersection(backlink_set))
-                if overlap < 2 and len(outgoing_set) + len(backlink_set) > 5:
-                    bridge_candidates.append((note.filename, len(outgoing_set) + len(backlink_set)))
-        info.bridge_notes = sorted(bridge_candidates, key=lambda x: x[1], reverse=True)[:5]
-        
-        # Analysis of tag co-occurrence
-        tag_co_occurrence = Counter(tag_pairs)
-        info.tag_co_occurrence = {f"{tag1} & {tag2}": count 
-                                 for (tag1, tag2), count in tag_co_occurrence.most_common(10)}
-        
-        # Tag clusters (simplified approximation based on co-occurrence)
-        common_pairs = tag_co_occurrence.most_common(20)
-        if common_pairs:
-            freq_tags = set()
-            for (tag1, tag2), _ in common_pairs:
-                freq_tags.add(tag1)
-                freq_tags.add(tag2)
-            top_tags = list(freq_tags)[:10]  # Use top 10 tags for clusters
-            tag_clusters = []
-            for i, tag in enumerate(top_tags):
-                related = []
-                for pair, count in common_pairs:
-                    if tag in pair:
-                        other = pair[0] if pair[1] == tag else pair[1]
-                        related.append(other)
-                if related:
-                    tag_clusters.append((tag, related[:3]))  # Top 3 related tags
-            info.tag_clusters = tag_clusters[:5]  # Top 5 clusters
-        
-        # Reference and alias stats
-        info.total_references = sum(reference_counts)
-        info.average_references = info.total_references / note_count if note_count else 0
-        info.total_aliases = sum(alias_counts)
-        info.average_aliases = info.total_aliases / note_count if note_count else 0
-        info.citation_hubs = sorted(citation_rich_notes, key=lambda x: x[1], reverse=True)[:5]
-        
-        # Monthly creation patterns
-        info.notes_by_month = {month_names[month-1]: creation_month_counter.get(month, 0) 
-                              for month in range(1, 13)}
-        if creation_month_counter:
-            peak_month = max(creation_month_counter.items(), key=lambda x: x[1])
-            info.peak_creation_month = f"{month_names[peak_month[0]-1]} ({peak_month[1]} notes)"
-        
-        # Writing velocity metrics
-        if creation_dates:
-            # Calculate days covered
-            first_date = min(creation_dates)
-            last_date = max(creation_dates)
-            days_covered = (last_date - first_date).days + 1
-            if days_covered > 0:
-                info.writing_velocity = total_word_count / days_covered
+                # Reorder notes based on sorted indices
+                sorted_notes = [notes[i] for i, _ in sort_keys]
                 
-            # Calculate growth rate per year
-            for year, count in creation_year_counter.items():
-                year_days = 365 if year % 4 != 0 else 366
-                info.growth_rate[str(year)] = count / year_days
-                
-        # Word count by month (formatted)
-        sorted_months = sorted(word_count_by_month.items())
-        info.word_count_by_month = {month_key: count for month_key, count in sorted_months[-12:]}  # Last 12 months
-        
-        # Identify most productive periods
-        if sorted_months:
-            productive_periods = sorted(word_count_by_month.items(), key=lambda x: x[1], reverse=True)
-            info.most_productive_periods = [(period, count) for period, count in productive_periods[:3]]
-            
-        # Word count distribution
-        info.word_count_distribution = word_count_dist
-        
-        # Find longest and shortest notes
-        if notes_with_metadata:
-            info.longest_notes = [(n["filename"], n["word_count"]) 
-                                for n in sorted(notes_with_metadata, 
-                                                key=lambda x: x["word_count"], 
-                                                reverse=True)[:5]]
-            
-            info.shortest_notes = [(n["filename"], n["word_count"]) 
-                                 for n in sorted(notes_with_metadata, 
-                                                 key=lambda x: x["word_count"])[:5] 
-                                 if n["word_count"] > 0]  # Exclude empty notes
-            
-            # Find newest and oldest notes
-            dated_notes = [n for n in notes_with_metadata if n["created"]]
-            if dated_notes:
-                info.newest_notes = [(n["filename"], str(n["created"])) 
-                                    for n in sorted(dated_notes, 
-                                                   key=lambda x: x["created"], 
-                                                   reverse=True)[:5]]
-                
-                info.oldest_notes = [(n["filename"], str(n["created"])) 
-                                    for n in sorted(dated_notes, 
-                                                   key=lambda x: x["created"])[:5]]
-                
-                # Find untouched notes (not modified in a long time)
-                untouched_threshold = today - datetime.timedelta(days=365)  # 1 year
-                untouched = [(n["filename"], str(n["modified"])) 
-                            for n in notes_with_metadata 
-                            if n["modified"] and n["modified"] < untouched_threshold]
-                info.untouched_notes = sorted(untouched, key=lambda x: x[1])[:5]
-        
-        # Calculate content age distribution (percentage of content by age)
-        if creation_dates:
-            age_buckets = {
-                "< 1 month old": 0,
-                "1-3 months old": 0,
-                "3-6 months old": 0,
-                "6-12 months old": 0,
-                "1-2 years old": 0,
-                "> 2 years old": 0
-            }
-            
-            for dt in creation_dates:
-                age_days = (today - dt).days
-                if age_days < 30:
-                    age_buckets["< 1 month old"] += 1
-                elif age_days < 90:
-                    age_buckets["1-3 months old"] += 1
-                elif age_days < 180:
-                    age_buckets["3-6 months old"] += 1
-                elif age_days < 365:
-                    age_buckets["6-12 months old"] += 1
-                elif age_days < 730:
-                    age_buckets["1-2 years old"] += 1
-                else:
-                    age_buckets["> 2 years old"] += 1
-                    
-            # Convert to percentages
-            info.content_age = {k: (v / len(creation_dates) * 100) for k, v in age_buckets.items()}
-    
-    except Exception as e:
-        logger.exception(f"Error gathering index info: {e}")
-        
-    return info
+                logger.debug(f"Sorted {len(notes)} notes by {sort_by} in {time.time() - start_time:.2f} seconds using parallelization")
+                return sorted_notes
+        else:
+            # Regular sorting for other fields or smaller datasets
+            result = sorted(notes, key=key_func, reverse=reverse)
+            if len(notes) > 1000:
+                logger.debug(f"Sorted {len(notes)} notes by {sort_by} in {time.time() - start_time:.2f} seconds")
+            return result
+    else:
+        logger.warning(f"Sort field '{sort_by}' not recognized. Returning unsorted notes.")
+        return notes
 
 # --- Embeddings Search ---
 
@@ -747,8 +680,18 @@ def info(
         index_file = Path(os.path.join(notes_dir, default_index))
         logger.debug(f"Using default index file from config: {index_file}")
     
+    # Measure performance
+    start_time = time.time()
+    
+    # Get notes and generate analytics
     notes = get_cached_notes(ctx, index_file)
-    info_data = get_index_info(index_file, notes)
+    logger.debug(f"Loaded {len(notes)} notes in {time.time() - start_time:.2f} seconds")
+    
+    # Calculate analytics
+    analytics_start = time.time()
+    info_data = get_index_info(notes)
+    logger.debug(f"Generated analytics in {time.time() - analytics_start:.2f} seconds")
+    
     note_count = info_data.note_count
     focus = focus.lower() if focus else 'all'
 
@@ -950,6 +893,7 @@ def info(
         
         # Show monthly distribution
         notes_by_month = info_data.notes_by_month
+        import calendar
         for month in list(calendar.month_name)[1:]:  # Skip empty first item
             lines.append(f"    {month}: {notes_by_month.get(month, 0)}")
         
@@ -1018,6 +962,8 @@ def list_(
     """
     List notes or note metadata based on various criteria.
     """
+    # Track execution time
+    start_time = time.time()
     config = ctx.obj.get("config", {})
     
     # Get default index from config if not specified
@@ -1044,47 +990,93 @@ def list_(
     if mode not in allowed_modes:
         typer.echo(f"Invalid mode '{mode}'. Allowed values: {', '.join(allowed_modes)}", err=True)
         raise typer.Exit(1)
-        
+    
+    # Load notes
+    notes_load_start = time.time()
+    notes = get_cached_notes(ctx, index_file)
+    logger.debug(f"Loaded {len(notes)} notes in {time.time() - notes_load_start:.2f} seconds")
+    
+    # Process based on mode
+    process_start = time.time()
     if mode == "unique-tags":
-        notes = get_cached_notes(ctx, index_file)
-        tags = sorted({tag for note in notes for tag in note.tags})
+        # Use a set comprehension for better performance
+        all_tags = set()
+        for note in notes:
+            all_tags.update(note.tags)
+        tags = sorted(all_tags)
         output = "\n".join(tags)
+        logger.debug(f"Found {len(tags)} unique tags in {time.time() - process_start:.2f} seconds")
     elif mode == "orphans":
-        notes = get_cached_notes(ctx, index_file)
         orphan_notes = filter_orphan_notes(notes)
         output = format_output(orphan_notes, output_format, fields, separator, format_string, use_color)
+        logger.debug(f"Found {len(orphan_notes)} orphan notes in {time.time() - process_start:.2f} seconds")
     elif mode == "untagged-orphans":
-        notes = get_cached_notes(ctx, index_file)
         untagged_orphan_notes = filter_untagged_orphan_notes(notes)
         output = format_output(untagged_orphan_notes, output_format, fields, separator, format_string, use_color)
+        logger.debug(f"Found {len(untagged_orphan_notes)} untagged orphan notes in {time.time() - process_start:.2f} seconds")
     elif mode == "dangling-links":
-        notes = get_cached_notes(ctx, index_file)
         d_map = find_dangling_links(notes)
         output = format_dangling_links_output(d_map, output_format, use_color)
+        total_dangling = sum(len(links) for links in d_map.values())
+        logger.debug(f"Found {total_dangling} dangling links in {len(d_map)} notes in {time.time() - process_start:.2f} seconds")
     else:
-        notes = get_cached_notes(ctx, index_file)
-        if filter_tag:
-            notes = filter_by_tag(notes, filter_tag, tag_mode, exclude_tag)
-        elif exclude_tag and not filter_tag:
-            notes = filter_by_tag(notes, [], exclude_tags=exclude_tag)
+        # Default notes listing with filtering
+        filter_start = time.time()
+        
+        # Always use optimized tag filtering (it handles no tags case efficiently)
+        notes = filter_by_tag_optimized(ctx, index_file, 
+                                     filter_tag or [], 
+                                     tag_mode, 
+                                     exclude_tag)
+        logger.debug(f"Tag filtering completed in {time.time() - filter_start:.2f} seconds, {len(notes)} notes remaining")
+        
+        # Continue with other filters
         if stdin:
+            stdin_start = time.time()
             notes = filter_by_filenames_stdin(notes)
+            logger.debug(f"Filtered by stdin in {time.time() - stdin_start:.2f} seconds, {len(notes)} notes remaining")
+            
         if filename_contains:
+            filename_start = time.time()
             notes = filter_by_filename_contains(notes, filename_contains)
+            logger.debug(f"Filtered by filename contains '{filename_contains}' in {time.time() - filename_start:.2f} seconds, {len(notes)} notes remaining")
+            
         if filter_backlink:
+            backlink_start = time.time()
             notes = [n for n in notes if filter_backlink in n.backlinks]
+            logger.debug(f"Filtered by backlink '{filter_backlink}' in {time.time() - backlink_start:.2f} seconds, {len(notes)} notes remaining")
+            
         if filter_outgoing_link:
+            outlink_start = time.time()
             notes = filter_by_outgoing_link(notes, filter_outgoing_link)
+            logger.debug(f"Filtered by outgoing link '{filter_outgoing_link}' in {time.time() - outlink_start:.2f} seconds, {len(notes)} notes remaining")
+            
         if date_start or date_end:
+            date_start_time = time.time()
             notes = filter_by_date_range(notes, date_start, date_end)
+            logger.debug(f"Filtered by date range in {time.time() - date_start_time:.2f} seconds, {len(notes)} notes remaining")
+            
         if filter_field and len(filter_field) >= 2:
+            field_start = time.time()
             field_name = filter_field[0]
             field_value = filter_field[1]
             notes = filter_by_field_value(notes, field_name, field_value)
+            logger.debug(f"Filtered by field {field_name}={field_value} in {time.time() - field_start:.2f} seconds, {len(notes)} notes remaining")
+            
         if min_word_count is not None or max_word_count is not None:
+            wc_start = time.time()
             notes = filter_by_word_count_range(notes, min_word_count, max_word_count)
+            logger.debug(f"Filtered by word count range in {time.time() - wc_start:.2f} seconds, {len(notes)} notes remaining")
+        
+        # Sorting
+        sort_start = time.time()
         notes = sort_notes(notes, sort_by)
+        logger.debug(f"Sorted {len(notes)} notes by {sort_by} in {time.time() - sort_start:.2f} seconds")
+        
+        # Output formatting
+        format_start = time.time()
         output = format_output(notes, output_format, fields, separator, format_string, use_color)
+        logger.debug(f"Formatted output in {time.time() - format_start:.2f} seconds")
         
     if output_file:
         try:
@@ -1126,14 +1118,34 @@ def search_embeddings(
         embeddings_file = index_file.parent / "embeddings.json"
         
     # Load index data (using cache)
+    start_time = time.time()
     notes = get_cached_notes(ctx, index_file)
+    logger.debug(f"Loaded {len(notes)} notes in {time.time() - start_time:.2f} seconds")
+    
     if not notes:
         raise typer.Exit("No notes loaded from index.")
 
     # Build a mapping: note filename → Note object
     notes_dict: Dict[str, Note] = {n.filename: n for n in notes}
 
+    # Load embeddings
+    emb_start_time = time.time()
+    try:
+        # Use orjson for faster parsing if available
+        if embeddings_file.exists():
+            if orjson:
+                embeddings_map = orjson.loads(embeddings_file.read_bytes())
+            else:
+                with embeddings_file.open("r", encoding="utf-8") as ef:
+                    embeddings_map = json.load(ef)
+            logger.debug(f"Loaded embeddings in {time.time() - emb_start_time:.2f} seconds")
+        else:
+            raise typer.Exit(f"Embeddings file '{embeddings_file}' not found. Cannot perform search.")
+    except Exception as e:
+        raise typer.Exit(f"Error reading embeddings file '{embeddings_file}': {e}")
+
     # If a query string is provided, use it. Otherwise, use the query_file.
+    query_start_time = time.time()
     if query is not None:
         typer.echo("---Embedding supplied query string...---")
         query_text = query
@@ -1158,17 +1170,10 @@ def search_embeddings(
 
     # Get or compute the query embedding.
     query_embedding = get_embedding(query_text, model=embedding_model)
+    logger.debug(f"Generated query embedding in {time.time() - query_start_time:.2f} seconds")
 
-    # Load embeddings mapping from file
-    if not embeddings_file.exists():
-        raise typer.Exit(f"Embeddings file '{embeddings_file}' not found. Cannot perform search.")
-    try:
-        with embeddings_file.open("r", encoding="utf-8") as ef:
-            embeddings_map: Dict[str, List[float]] = json.load(ef)
-    except Exception as e:
-        raise typer.Exit(f"Error reading embeddings file '{embeddings_file}': {e}")
-
-    # Build lists of embeddings and corresponding note IDs.
+    # Process embeddings and prepare for similarity computation
+    similarity_start_time = time.time()
     available_ids = []
     embeddings_list = []
     for note in notes:
@@ -1176,20 +1181,33 @@ def search_embeddings(
         if nid in embeddings_map:
             embeddings_list.append(embeddings_map[nid])
             available_ids.append(nid)
+    
     if not embeddings_list:
         raise typer.Exit("No embeddings found in the embeddings file to compare against.")
         
+    # Use numpy for efficient vector operations
     embeddings_array = np.array(embeddings_list, dtype="float32")
     
-    # Normalize embeddings.
+    # Normalize embeddings for faster cosine similarity computation
     def normalize(vec: np.ndarray) -> np.ndarray:
         return vec / (np.linalg.norm(vec) + 1e-10)
     
-    embeddings_normalized = np.array([normalize(np.array(vec, dtype="float32")) for vec in embeddings_list])
+    # Normalize all embeddings (in parallel for large datasets)
+    if len(embeddings_list) > 1000:
+        with ThreadPoolExecutor(max_workers=DEFAULT_NUM_WORKERS) as executor:
+            def normalize_embedding(vec):
+                return normalize(np.array(vec, dtype="float32"))
+            embeddings_normalized = list(executor.map(normalize_embedding, embeddings_list))
+            embeddings_normalized = np.array(embeddings_normalized)
+    else:
+        embeddings_normalized = np.array([normalize(np.array(vec, dtype="float32")) for vec in embeddings_list])
+    
+    # Normalize query vector
     query_vector = normalize(np.array(query_embedding, dtype="float32"))
     
-    # Compute cosine similarities.
+    # Compute cosine similarities using efficient matrix operation
     similarities = np.dot(embeddings_normalized, query_vector)
+    logger.debug(f"Computed similarities in {time.time() - similarity_start_time:.2f} seconds")
     
     # Find top k indices; if the query is from the index, exclude it.
     try:
@@ -1197,14 +1215,30 @@ def search_embeddings(
     except ValueError:
         query_idx = None
         
-    sorted_indices = np.argsort(similarities)[::-1]
-    top_k = []
-    for idx in sorted_indices:
-        if query_idx is not None and idx == query_idx:
-            continue
-        top_k.append(idx)
-        if len(top_k) >= k:
-            break
+    results_start_time = time.time()
+    # Get indices for top k similarities (using argpartition for better performance)
+    if len(similarities) > k * 10:  # For larger datasets
+        # Use argpartition which is faster than argsort for finding top-k
+        if query_idx is not None:
+            # Temporarily set similarity to -1 to exclude from results
+            similarities[query_idx] = -1
+        
+        # Get indices of top k+1 results (in case we need to exclude query)
+        top_indices = np.argpartition(similarities, -(k+1))[-(k+1):]
+        # Sort just these top indices by similarity
+        top_indices = top_indices[np.argsort(similarities[top_indices])][::-1]
+        # Take only k results
+        top_k = top_indices[:k]
+    else:
+        # For smaller datasets, use the original sort-based approach
+        sorted_indices = np.argsort(similarities)[::-1]
+        top_k = []
+        for idx in sorted_indices:
+            if query_idx is not None and idx == query_idx:
+                continue
+            top_k.append(idx)
+            if len(top_k) >= k:
+                break
             
     # Prepare results for display.
     results = []
@@ -1214,6 +1248,7 @@ def search_embeddings(
         note = notes_dict.get(nid)
         if note:
             results.append({"filename": nid, "title": note.title or nid, "similarity": sim_score})
+    logger.debug(f"Prepared results in {time.time() - results_start_time:.2f} seconds")
             
     if not results:
         typer.echo("No similar notes found.")

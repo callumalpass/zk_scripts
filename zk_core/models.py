@@ -26,6 +26,13 @@ class Note:
     body: str = ""
     references: List[str] = field(default_factory=list)
     _extra_fields: Dict[str, Any] = field(default_factory=dict)
+    
+    def __hash__(self):
+        """Hash method for Note objects, based on the filename.
+        
+        This is needed for using Note objects in sets and as dictionary keys.
+        """
+        return hash(self.filename)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Note':
