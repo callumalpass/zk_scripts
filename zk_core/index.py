@@ -106,7 +106,7 @@ def process_markdown_file(filepath: str,
     return result
 
 
-def load_index_state(state_file: str, quiet: bool = False) -> Dict[str, float]:
+def load_index_state(state_file: str, quiet: bool = False) -> Dict[str, Any]:
     """Load index state from file."""
     if os.path.exists(state_file):
         try:
@@ -114,13 +114,16 @@ def load_index_state(state_file: str, quiet: bool = False) -> Dict[str, float]:
                 state = json.load(f)
                 if not quiet:
                     logger.debug(f"Loaded state from {state_file}: {state}")
+                # Handle legacy format which was just a dict of file mtimes
+                if state and isinstance(next(iter(state.values())), (int, float)):
+                    return {"files": state, "dirs": {}}
                 return state
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Error reading state file '{state_file}': {e}. Starting fresh.")
-    return {}
+    return {"files": {}, "dirs": {}}
 
 
-def save_index_state(state_file: str, index_state: Dict[str, float], quiet: bool = False) -> None:
+def save_index_state(state_file: str, index_state: Dict[str, Any], quiet: bool = False) -> None:
     """Save index state to file."""
     try:
         with open(state_file, 'w', encoding='utf-8') as f:
@@ -261,20 +264,32 @@ def run_indexer(
             exclude_patterns_list = config_val
     logger.debug(f"Using exclude patterns: {exclude_patterns_list}")
 
-    state_file = index_file_path.replace(".json", "_state.json")
-    embedding_state_file = embeddings_file.replace(".json", "_state.json") if embeddings_file else None
-
+    # Use XDG cache directory for state files
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "zk_scripts")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Create a unique and stable state file name based on the notes directory path
+    # Use a more stable identifier than hash() which can vary between Python runs
+    notes_dir_id = notes_dir_path.replace("/", "_").replace(" ", "_").replace(".", "_")
+    if not quiet:
+        logger.debug(f"Using notes directory ID: {notes_dir_id}")
+    state_file = os.path.join(cache_dir, f"index_state_{notes_dir_id}.json")
+    embedding_state_file = os.path.join(cache_dir, f"embedding_state_{notes_dir_id}.json") if embeddings_file else None
+    
+    if not quiet:
+        logger.debug(f"Using state file: {state_file}")
+    
     if full_reindex:
         remove_index_state_file(state_file, verbose, quiet)
         if embedding_state_file:
             remove_index_state_file(embedding_state_file, verbose, quiet)
 
-    previous_index_state: Dict[str, float] = {}
+    previous_index_state: Dict[str, Any] = {}
     if not full_reindex:
         previous_index_state = load_index_state(state_file, quiet)
-    current_index_state: Dict[str, float] = {}
+    current_index_state: Dict[str, Any] = {}
 
-    previous_embeddings_state: Dict[str, float] = {}
+    previous_embeddings_state: Dict[str, Any] = {}
     if generate_embeddings and embedding_state_file:
         previous_embeddings_state = load_index_state(embedding_state_file, quiet)
 
@@ -284,21 +299,79 @@ def run_indexer(
         existing_embeddings = load_embeddings_file(embeddings_file, quiet)
 
     logger.debug("Scanning files")
-    markdown_files = [fp for fp in scandir_recursive(notes_dir_path, exclude_patterns=exclude_patterns_list, quiet=quiet)
-                      if fp.lower().endswith(".md")]
+    
+    # Initialize new index state structure
+    current_index_state = {"files": {}, "dirs": {}}
+    
+    # Get directory modification times from previous run
+    dir_mtimes = previous_index_state.get("dirs", {})
+    
+    # Keep track of which directories were skipped (unchanged)
+    skipped_dirs = []
+    
+    # Use enhanced scandir_recursive with directory mtimes for efficiency
+    markdown_files = [fp for fp in scandir_recursive(
+        notes_dir_path, 
+        exclude_patterns=exclude_patterns_list, 
+        quiet=quiet,
+        dir_mtimes=dir_mtimes,
+        notes_dir=notes_dir_path,
+        skipped_dirs=skipped_dirs
+    ) if fp.lower().endswith(".md")]
+    
+    if not quiet and skipped_dirs:
+        logger.info(f"Skipped {len(skipped_dirs)} unchanged directories")
+    
     logger.info(f"Found {len(markdown_files)} markdown files.")
 
+    # Add the root directory to the list of directories to track
+    try:
+        root_mtime = os.path.getmtime(notes_dir_path)
+        current_index_state["dirs"]["."] = root_mtime  # Use "." to represent the root directory
+    except OSError as e:
+        logger.warning(f"Error getting mtime for root directory {notes_dir_path}: {e}")
+        
+    # Map to track directories with updated files
+    updated_dirs = set()
     current_note_ids = set()
+    
+    # Add files from scanned directories
     for fp in markdown_files:
         note_id = os.path.splitext(os.path.relpath(fp, notes_dir_path))[0]
         current_note_ids.add(note_id)
         try:
             mod_time = os.path.getmtime(fp)
-            current_index_state[note_id] = mod_time
+            current_index_state["files"][note_id] = mod_time
+            
+            # Track which directory this file is in
+            dir_path = os.path.dirname(os.path.relpath(fp, notes_dir_path))
+            updated_dirs.add(dir_path)
         except OSError as e:
             logger.warning(f"Error accessing file {fp}: {e}")
-
-    previous_note_ids = set(previous_index_state.keys())
+    
+    # We're no longer relying on directory skipping since it was causing issues
+    # with file change detection. This means we're checking every individual file again.
+    # Let's keep this section empty for now. If needed, we can add more robust directory 
+    # caching in the future, but the current implementation will scan all files
+    # and rely on file-level modification times, which is more reliable.
+    
+    # Process directory modification times for caching
+    for dir_path in updated_dirs:
+        if not dir_path:  # Skip empty dir path (files in root are already tracked)
+            continue
+            
+        abs_dir_path = os.path.join(notes_dir_path, dir_path)
+        try:
+            if os.path.exists(abs_dir_path):
+                dir_mtime = os.path.getmtime(abs_dir_path)
+                current_index_state["dirs"][dir_path] = dir_mtime
+        except OSError as e:
+            logger.warning(f"Error getting mtime for directory {abs_dir_path}: {e}")
+    
+    # Still record directory mtimes for potential future optimizations
+    # even though we're not currently using them for skipping
+    
+    previous_note_ids = set(previous_index_state.get("files", {}).keys())
     deleted_note_ids = previous_note_ids - current_note_ids
     for note_id in deleted_note_ids:
         if note_id in existing_index:
@@ -308,14 +381,34 @@ def run_indexer(
         logger.info(f"Note deleted: {note_id}")
 
     files_to_process = []
+    
+    # Check modified files from the scan
     for fp in markdown_files:
         note_id = os.path.splitext(os.path.relpath(fp, notes_dir_path))[0]
         try:
             mod_time = os.path.getmtime(fp)
-            if full_reindex or note_id not in previous_index_state or previous_index_state.get(note_id, 0) < mod_time:
+            prev_files = previous_index_state.get("files", {})
+            if full_reindex or note_id not in prev_files or prev_files.get(note_id, 0) < mod_time:
                 files_to_process.append(fp)
         except OSError as e:
             logger.warning(f"Error accessing file {fp}: {e}")
+            
+    # Check all existing files to see if any weren't found in the scan but need updating
+    prev_files = previous_index_state.get("files", {})
+    for note_id, prev_mod_time in prev_files.items():
+        # Skip files we've already decided to process
+        if any(os.path.splitext(os.path.relpath(fp, notes_dir_path))[0] == note_id for fp in files_to_process):
+            continue
+            
+        # Try to find the file on disk
+        file_path = os.path.join(notes_dir_path, note_id + ".md")
+        if os.path.exists(file_path):
+            try:
+                curr_mod_time = os.path.getmtime(file_path)
+                if curr_mod_time > prev_mod_time:
+                    files_to_process.append(file_path)
+            except OSError as e:
+                logger.warning(f"Error accessing file {file_path}: {e}")
 
     logger.info(f"Files to process: {len(files_to_process)}")
 
@@ -371,6 +464,7 @@ def run_indexer(
                 del existing_embeddings[key]
         write_embeddings_file(embeddings_file, existing_embeddings, quiet)
         if embedding_state_file:
+            # For embeddings state, use the same structure as the index state
             save_index_state(embedding_state_file, current_index_state, quiet)
     
     # Print summary

@@ -148,14 +148,39 @@ def get_index_file_path(config: Dict[str, Any], notes_dir: Optional[str] = None,
     
     return resolve_path(index_file)
 
-def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, quiet: bool = False) -> List[str]:
-    """Recursively scan a directory, skipping entries that match any exclude pattern."""
+def scandir_recursive(
+    root: str, 
+    exclude_patterns: Optional[List[str]] = None, 
+    quiet: bool = False,
+    dir_mtimes: Optional[Dict[str, float]] = None,
+    notes_dir: Optional[str] = None,
+    skipped_dirs: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Recursively scan a directory, skipping entries that match any exclude pattern.
+    NOTE: We no longer skip directories based on mtimes - this was causing issues
+    with file change detection. We'll just be collecting all files for processing.
+    
+    Args:
+        root: Root directory to scan
+        exclude_patterns: List of glob patterns to exclude
+        quiet: Whether to suppress debug logging
+        dir_mtimes: Dictionary of directory paths to modification times from previous run (unused)
+        notes_dir: Base notes directory for calculating relative paths in dir_mtimes (unused)
+        skipped_dirs: Optional list to track which directories were skipped (unused)
+    """
     import fnmatch
     
     exclude_patterns = exclude_patterns or []
     paths = []
+    
+    # We'll still track directories for future optimizations
+    if skipped_dirs is None:
+        skipped_dirs = []
+    
     if not quiet:
         logger.debug(f"Scanning directory: {root}")
+        
     try:
         with os.scandir(root) as it:
             for entry in it:
@@ -178,7 +203,14 @@ def scandir_recursive(root: str, exclude_patterns: Optional[List[str]] = None, q
                 elif entry.is_dir():
                     if not quiet:
                         logger.debug(f"Entering directory: {full_path}")
-                    paths.extend(scandir_recursive(full_path, exclude_patterns, quiet))
+                    paths.extend(scandir_recursive(
+                        full_path, 
+                        exclude_patterns, 
+                        quiet,
+                        dir_mtimes,
+                        notes_dir,
+                        skipped_dirs
+                    ))
     except PermissionError as e:
         logger.warning(f"Permission error accessing directory: {root}. Skipping. Error: {e}")
     except OSError as e:
