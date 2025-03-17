@@ -95,6 +95,24 @@ class IndexInfo:
     notes_by_day_of_week: Dict[str, int] = field(default_factory=dict)
     peak_creation_day: str = "N/A"
     notes_by_year: Dict[int, int] = field(default_factory=dict)
+    
+    # Network and connectivity metrics
+    total_links: int = 0
+    average_outgoing_links: float = 0.0
+    median_outgoing_links: float = 0.0
+    average_backlinks: float = 0.0
+    median_backlinks: float = 0.0
+    highly_connected_notes: List[tuple] = field(default_factory=list)
+    
+    # Reference and alias statistics
+    total_references: int = 0
+    average_references: float = 0.0
+    total_aliases: int = 0
+    average_aliases: float = 0.0
+    
+    # Monthly patterns
+    notes_by_month: Dict[str, int] = field(default_factory=dict)
+    peak_creation_month: str = "N/A"
 
 
 @dataclass
