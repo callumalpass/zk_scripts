@@ -40,7 +40,7 @@ from zk_core.utils import (
 
 # Import constants
 from zk_core.constants import (
-    DEFAULT_WORKERS,
+    DEFAULT_NUM_WORKERS as DEFAULT_WORKERS,
     DEFAULT_NOTES_DIR,
     DEFAULT_INDEX_FILENAME
 )

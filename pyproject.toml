@@ -19,8 +19,14 @@ dependencies = [
     "typing-extensions>=4.7.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0"
+]
+
 [tool.setuptools]
-packages = ["zk_core"]
+packages = ["zk_core", "tests"]
 
 [tool.mypy]
 python_version = "3.8"
@@ -44,6 +50,12 @@ select = ["E", "F", "W", "I"]
 ignore = []
 fixable = ["A", "B", "C", "D", "E", "F", "I"]
 unfixable = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [project.scripts]
 zk-index = "zk_core.index:app"

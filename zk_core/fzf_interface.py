@@ -13,9 +13,9 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import yaml
 
+from zk_core.constants import DEFAULT_NOTES_DIR, DEFAULT_NVIM_SOCKET
 from zk_core.config import load_config, get_config_value, resolve_path
 from zk_core.fzf_manager import FzfManager, FzfBinding
-from zk_core.constants import DEFAULT_NVIM_SOCKET
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
