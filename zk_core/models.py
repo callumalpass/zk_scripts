@@ -103,16 +103,38 @@ class IndexInfo:
     average_backlinks: float = 0.0
     median_backlinks: float = 0.0
     highly_connected_notes: List[tuple] = field(default_factory=list)
+    bridge_notes: List[tuple] = field(default_factory=list)  # Notes that connect otherwise separate clusters
+    tag_clusters: List[tuple] = field(default_factory=list)  # Groups of tags that often appear together
+    network_density: float = 0.0  # Measure of overall connectedness (0-1)
     
     # Reference and alias statistics
     total_references: int = 0
     average_references: float = 0.0
     total_aliases: int = 0
     average_aliases: float = 0.0
+    citation_hubs: List[tuple] = field(default_factory=list)  # Notes with many references
     
     # Monthly patterns
     notes_by_month: Dict[str, int] = field(default_factory=dict)
     peak_creation_month: str = "N/A"
+    
+    # Writing velocity metrics
+    growth_rate: Dict[str, float] = field(default_factory=dict)  # Growth rate by time period
+    word_count_by_month: Dict[str, int] = field(default_factory=dict)  # Words written each month
+    writing_velocity: float = 0.0  # Average words written per day
+    most_productive_periods: List[tuple] = field(default_factory=list)  # Most productive periods
+    
+    # Content analysis
+    content_age: Dict[str, float] = field(default_factory=dict)  # Age distribution of content
+    word_count_distribution: Dict[str, int] = field(default_factory=dict)  # Distribution of notes by size
+    tag_co_occurrence: Dict[str, List[str]] = field(default_factory=dict)  # Tags that occur together
+    
+    # Advanced note characteristics
+    longest_notes: List[tuple] = field(default_factory=list)  # Notes with highest word count
+    shortest_notes: List[tuple] = field(default_factory=list)  # Notes with lowest word count
+    newest_notes: List[tuple] = field(default_factory=list)  # Most recently created notes
+    oldest_notes: List[tuple] = field(default_factory=list)  # Oldest notes
+    untouched_notes: List[tuple] = field(default_factory=list)  # Notes not modified in long time
 
 
 @dataclass

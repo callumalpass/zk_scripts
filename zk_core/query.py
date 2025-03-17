@@ -391,9 +391,11 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
         word_counts = []
         file_sizes = []
         tag_counts = []  # track number of tags per note
+        tag_pairs = []  # track co-occurring tags
         orphan_count = 0
         untagged_orphan_count = 0
         dates = []
+        creation_dates = []
         extra_fields_counter = Counter()
 
         # Counters for creation dates
@@ -406,20 +408,59 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
         outgoing_links_counts = []
         backlinks_counts = []
         highly_connected_notes = []
+        citation_rich_notes = []
         
         # Reference and alias tracking
         reference_counts = []
         alias_counts = []
         
+        # Word count distribution buckets
+        word_count_dist = {
+            "tiny (1-100)": 0,
+            "small (101-250)": 0,
+            "medium (251-500)": 0,
+            "large (501-1000)": 0,
+            "huge (1001+)": 0
+        }
+        
+        # Collect nodes and edges for network analysis
+        note_connections = {}  # Maps note filename to list of connected note filenames
+        
+        # Tracking for best/worst notes
+        notes_with_metadata = []
+        
         # Month names for readable output
         month_names = list(calendar.month_name)[1:]  # Skip empty first item
+        today = datetime.datetime.now().date()
+        
+        # Word count by month
+        word_count_by_month = Counter()
 
         for note in notes:
+            # Collect metadata for sorting later
+            note_meta = {
+                "filename": note.filename,
+                "word_count": note.word_count,
+                "outgoing_links": len(note.outgoing_links),
+                "backlinks": len(note.backlinks),
+                "references": len(note.references),
+                "created": None,
+                "modified": None,
+                "tags": len(note.tags),
+                "connections": len(note.outgoing_links) + len(note.backlinks)
+            }
+            
             # Count tags per note
             tag_count = len(note.tags)
             tag_counts.append(tag_count)
             all_tags.extend(note.tags)
             tag_counter.update(note.tags)
+            
+            # Track tag co-occurrences
+            if len(note.tags) >= 2:
+                for i, tag1 in enumerate(note.tags):
+                    for tag2 in note.tags[i+1:]:
+                        tag_pairs.append((tag1, tag2))
             
             # Extra frontmatter keys
             for key in note._extra_fields.keys():
@@ -431,13 +472,41 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
             word_counts.append(note.word_count)
             file_sizes.append(note.file_size)
             
-            # Date range using dateModified
+            # Word count distribution
+            wc = note.word_count
+            if wc <= 100:
+                word_count_dist["tiny (1-100)"] += 1
+            elif wc <= 250:
+                word_count_dist["small (101-250)"] += 1
+            elif wc <= 500:
+                word_count_dist["medium (251-500)"] += 1
+            elif wc <= 1000:
+                word_count_dist["large (501-1000)"] += 1
+            else:
+                word_count_dist["huge (1001+)"] += 1
+                
+            # Modification date
             if note.dateModified:
                 dt = parse_iso_datetime(note.dateModified)
                 if dt:
                     dates.append(dt.date())
+                    note_meta["modified"] = dt.date()
                 else:
                     logger.warning(f"Could not parse dateModified for '{note.filename}'")
+            
+            # Creation date
+            dt_created = parse_iso_datetime(note.dateCreated)
+            if dt_created:
+                creation_dates.append(dt_created.date())
+                note_meta["created"] = dt_created.date()
+                
+                # Add words to month counter
+                month_key = f"{dt_created.year}-{dt_created.month:02d}"
+                word_count_by_month[month_key] += note.word_count
+            elif note.dateModified:
+                dt_mod = parse_iso_datetime(note.dateModified)
+                if dt_mod:
+                    note_meta["created"] = dt_mod.date()
                     
             # For orphan metrics
             if not note.outgoing_links and not note.backlinks:
@@ -452,16 +521,24 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
             outgoing_links_counts.append(outgoing_count)
             backlinks_counts.append(backlink_count)
             
+            # Store connections for network analysis
+            note_connections[note.filename] = note.outgoing_links
+            
             # Track highly connected notes
             total_connections = outgoing_count + backlink_count
             if total_connections > 10:  # arbitrary threshold for "highly connected"
                 highly_connected_notes.append((note.filename, total_connections))
             
             # Track references and aliases
-            reference_counts.append(len(note.references))
+            ref_count = len(note.references)
+            reference_counts.append(ref_count)
             alias_counts.append(len(note.aliases))
+            
+            # Find citation-rich notes
+            if ref_count > 5:  # arbitrary threshold
+                citation_rich_notes.append((note.filename, ref_count))
 
-            # Determine creation date
+            # Determine creation date for statistics
             dt_created = parse_iso_datetime(note.dateCreated)
             if not dt_created:
                 dt_created = parse_iso_datetime(note.dateModified)
@@ -469,7 +546,10 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
                 creation_day_counter[dt_created.strftime("%A")] += 1
                 creation_year_counter[dt_created.year] += 1
                 creation_month_counter[dt_created.month] += 1
-
+            
+            # Add to metadata collection
+            notes_with_metadata.append(note_meta)
+            
         # Calculate statistics
         info.total_word_count = total_word_count
         info.average_word_count = total_word_count / note_count if note_count else 0
@@ -520,11 +600,55 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
         info.median_backlinks = float(np.median(backlinks_counts)) if backlinks_counts else 0
         info.highly_connected_notes = sorted(highly_connected_notes, key=lambda x: x[1], reverse=True)[:5]
         
+        # Calculate network density (ratio of actual connections to possible connections)
+        possible_connections = note_count * (note_count - 1)
+        if possible_connections > 0:
+            info.network_density = total_links / possible_connections
+        
+        # Identify bridge notes - approximate with notes having both incoming and outgoing links to different sets of notes
+        bridge_candidates = []
+        for note in notes:
+            # Check if this note connects different parts of the network
+            if note.outgoing_links and note.backlinks:
+                # Calculate the overlap between outgoing links and backlinks
+                outgoing_set = set(note.outgoing_links)
+                backlink_set = set(note.backlinks)
+                # If there's little overlap and sufficient links, consider it a bridge
+                overlap = len(outgoing_set.intersection(backlink_set))
+                if overlap < 2 and len(outgoing_set) + len(backlink_set) > 5:
+                    bridge_candidates.append((note.filename, len(outgoing_set) + len(backlink_set)))
+        info.bridge_notes = sorted(bridge_candidates, key=lambda x: x[1], reverse=True)[:5]
+        
+        # Analysis of tag co-occurrence
+        tag_co_occurrence = Counter(tag_pairs)
+        info.tag_co_occurrence = {f"{tag1} & {tag2}": count 
+                                 for (tag1, tag2), count in tag_co_occurrence.most_common(10)}
+        
+        # Tag clusters (simplified approximation based on co-occurrence)
+        common_pairs = tag_co_occurrence.most_common(20)
+        if common_pairs:
+            freq_tags = set()
+            for (tag1, tag2), _ in common_pairs:
+                freq_tags.add(tag1)
+                freq_tags.add(tag2)
+            top_tags = list(freq_tags)[:10]  # Use top 10 tags for clusters
+            tag_clusters = []
+            for i, tag in enumerate(top_tags):
+                related = []
+                for pair, count in common_pairs:
+                    if tag in pair:
+                        other = pair[0] if pair[1] == tag else pair[1]
+                        related.append(other)
+                if related:
+                    tag_clusters.append((tag, related[:3]))  # Top 3 related tags
+            info.tag_clusters = tag_clusters[:5]  # Top 5 clusters
+        
         # Reference and alias stats
         info.total_references = sum(reference_counts)
         info.average_references = info.total_references / note_count if note_count else 0
         info.total_aliases = sum(alias_counts)
         info.average_aliases = info.total_aliases / note_count if note_count else 0
+        info.citation_hubs = sorted(citation_rich_notes, key=lambda x: x[1], reverse=True)[:5]
         
         # Monthly creation patterns
         info.notes_by_month = {month_names[month-1]: creation_month_counter.get(month, 0) 
@@ -533,6 +657,92 @@ def get_index_info(index_file: Path, notes: List[Note]) -> IndexInfo:
             peak_month = max(creation_month_counter.items(), key=lambda x: x[1])
             info.peak_creation_month = f"{month_names[peak_month[0]-1]} ({peak_month[1]} notes)"
         
+        # Writing velocity metrics
+        if creation_dates:
+            # Calculate days covered
+            first_date = min(creation_dates)
+            last_date = max(creation_dates)
+            days_covered = (last_date - first_date).days + 1
+            if days_covered > 0:
+                info.writing_velocity = total_word_count / days_covered
+                
+            # Calculate growth rate per year
+            for year, count in creation_year_counter.items():
+                year_days = 365 if year % 4 != 0 else 366
+                info.growth_rate[str(year)] = count / year_days
+                
+        # Word count by month (formatted)
+        sorted_months = sorted(word_count_by_month.items())
+        info.word_count_by_month = {month_key: count for month_key, count in sorted_months[-12:]}  # Last 12 months
+        
+        # Identify most productive periods
+        if sorted_months:
+            productive_periods = sorted(word_count_by_month.items(), key=lambda x: x[1], reverse=True)
+            info.most_productive_periods = [(period, count) for period, count in productive_periods[:3]]
+            
+        # Word count distribution
+        info.word_count_distribution = word_count_dist
+        
+        # Find longest and shortest notes
+        if notes_with_metadata:
+            info.longest_notes = [(n["filename"], n["word_count"]) 
+                                for n in sorted(notes_with_metadata, 
+                                                key=lambda x: x["word_count"], 
+                                                reverse=True)[:5]]
+            
+            info.shortest_notes = [(n["filename"], n["word_count"]) 
+                                 for n in sorted(notes_with_metadata, 
+                                                 key=lambda x: x["word_count"])[:5] 
+                                 if n["word_count"] > 0]  # Exclude empty notes
+            
+            # Find newest and oldest notes
+            dated_notes = [n for n in notes_with_metadata if n["created"]]
+            if dated_notes:
+                info.newest_notes = [(n["filename"], str(n["created"])) 
+                                    for n in sorted(dated_notes, 
+                                                   key=lambda x: x["created"], 
+                                                   reverse=True)[:5]]
+                
+                info.oldest_notes = [(n["filename"], str(n["created"])) 
+                                    for n in sorted(dated_notes, 
+                                                   key=lambda x: x["created"])[:5]]
+                
+                # Find untouched notes (not modified in a long time)
+                untouched_threshold = today - datetime.timedelta(days=365)  # 1 year
+                untouched = [(n["filename"], str(n["modified"])) 
+                            for n in notes_with_metadata 
+                            if n["modified"] and n["modified"] < untouched_threshold]
+                info.untouched_notes = sorted(untouched, key=lambda x: x[1])[:5]
+        
+        # Calculate content age distribution (percentage of content by age)
+        if creation_dates:
+            age_buckets = {
+                "< 1 month old": 0,
+                "1-3 months old": 0,
+                "3-6 months old": 0,
+                "6-12 months old": 0,
+                "1-2 years old": 0,
+                "> 2 years old": 0
+            }
+            
+            for dt in creation_dates:
+                age_days = (today - dt).days
+                if age_days < 30:
+                    age_buckets["< 1 month old"] += 1
+                elif age_days < 90:
+                    age_buckets["1-3 months old"] += 1
+                elif age_days < 180:
+                    age_buckets["3-6 months old"] += 1
+                elif age_days < 365:
+                    age_buckets["6-12 months old"] += 1
+                elif age_days < 730:
+                    age_buckets["1-2 years old"] += 1
+                else:
+                    age_buckets["> 2 years old"] += 1
+                    
+            # Convert to percentages
+            info.content_age = {k: (v / len(creation_dates) * 100) for k, v in age_buckets.items()}
+    
     except Exception as e:
         logger.exception(f"Error gathering index info: {e}")
         
@@ -571,7 +781,8 @@ def info(
     ctx: typer.Context,
     index_file: Optional[Path] = typer.Option(None, "-i", help="Path to index JSON file."),
     color: Optional[str] = typer.Option(None, help="Colorize output: always, auto, never."),
-    focus: Optional[str] = typer.Option(None, "--focus", help="Focus on specific info section: network, content, dates, all"),
+    focus: Optional[str] = typer.Option(None, "--focus", 
+                                        help="Focus on specific info section: network, content, dates, writing, notable, advanced, all"),
 ):
     """
     Display detailed information about the index file.
@@ -580,6 +791,9 @@ def info(
     - network: Show network and connectivity metrics
     - content: Show content statistics (word count, tags, etc.)
     - dates: Show temporal analysis
+    - writing: Show writing productivity patterns
+    - notable: Show most notable notes (longest, shortest, newest, etc.)
+    - advanced: Show advanced analytics (tag clusters, bridge notes, etc.)
     - all: Show all information (default)
     """
     config = ctx.obj.get("config", {})
@@ -609,11 +823,20 @@ def info(
         lines.extend([
             "",
             "Word Count Statistics:",
-            f"  Total word count: {info_data.total_word_count}",
-            f"  Minimum word count: {info_data.min_word_count}",
-            f"  Maximum word count: {info_data.max_word_count}",
+            f"  Total word count: {info_data.total_word_count:,}",
+            f"  Minimum word count: {info_data.min_word_count:,}",
+            f"  Maximum word count: {info_data.max_word_count:,}",
             f"  Average word count: {info_data.average_word_count:.2f}",
             f"  Median word count: {info_data.median_word_count:.2f}",
+        ])
+        
+        # Add word count distribution if available
+        if hasattr(info_data, 'word_count_distribution') and info_data.word_count_distribution:
+            lines.append("  Word count distribution:")
+            for size_cat, count in info_data.word_count_distribution.items():
+                lines.append(f"    - {size_cat}: {count} notes ({count/note_count*100:.1f}%)")
+        
+        lines.extend([
             "",
             "File Size Statistics:",
             f"  Total file size: {(info_data.total_file_size_bytes / 1024 / 1024):.2f} MB",
@@ -628,10 +851,19 @@ def info(
             f"  Median tags per note: {info_data.median_tags_per_note:.2f}",
             f"  Most common tags (top 10): " +
                 (", ".join([f'{tag} ({count})' for tag, count in info_data.most_common_tags]) or "N/A"),
+        ])
+        
+        # Add tag co-occurrence if available
+        if hasattr(info_data, 'tag_co_occurrence') and info_data.tag_co_occurrence:
+            lines.append("  Common tag combinations:")
+            for pair, count in list(info_data.tag_co_occurrence.items())[:5]:
+                lines.append(f"    - {pair}: {count} occurrences")
+        
+        lines.extend([
             "",
             "Extra Frontmatter Fields:",
             f"  Fields found: " +
-                (", ".join([f"{field} ({count})" for field, count in info_data.extra_frontmatter_keys[:250]])
+                (", ".join([f"{field} ({count})" for field, count in info_data.extra_frontmatter_keys[:10]])
                  if info_data.extra_frontmatter_keys else "N/A"),
             "",
             "Reference and Alias Statistics:",
@@ -640,6 +872,12 @@ def info(
             f"  Total aliases: {info_data.total_aliases}",
             f"  Average aliases per note: {info_data.average_aliases:.2f}",
         ])
+        
+        # Add citation hubs if available
+        if hasattr(info_data, 'citation_hubs') and info_data.citation_hubs:
+            lines.append("  Citation-rich notes:")
+            for note_filename, ref_count in info_data.citation_hubs:
+                lines.append(f"    - {note_filename}: {ref_count} references")
     
     # Network metrics section
     if focus in ['network', 'all']:
@@ -651,6 +889,14 @@ def info(
             f"  Median outgoing links per note: {info_data.median_outgoing_links:.2f}",
             f"  Average backlinks per note: {info_data.average_backlinks:.2f}",
             f"  Median backlinks per note: {info_data.median_backlinks:.2f}",
+        ])
+        
+        # Add network density if available
+        if hasattr(info_data, 'network_density'):
+            lines.append(f"  Network density: {info_data.network_density:.5f} " +
+                        f"({info_data.network_density*100:.2f}% of possible connections)")
+            
+        lines.extend([
             f"  Orphan notes (no connections): {info_data.orphan_notes_count} " +
                 f"({(info_data.orphan_notes_count / note_count * 100) if note_count else 0:.2f}%)",
             f"  Untagged orphan notes: {info_data.untagged_orphan_notes_count} " +
@@ -660,11 +906,96 @@ def info(
         
         # Highly connected notes section
         if info_data.highly_connected_notes:
-            lines.append("  Most connected notes (filename, connection count):")
+            lines.append("  Most connected notes (connection hub notes):")
             for note_filename, connection_count in info_data.highly_connected_notes:
                 lines.append(f"    - {note_filename}: {connection_count} connections")
         else:
             lines.append("  No highly connected notes found")
+            
+        # Bridge notes section
+        if hasattr(info_data, 'bridge_notes') and info_data.bridge_notes:
+            lines.append("  Bridge notes (connect different clusters):")
+            for note_filename, connection_count in info_data.bridge_notes:
+                lines.append(f"    - {note_filename}: {connection_count} connections")
+    
+    # Writing productivity analysis section
+    if focus in ['writing', 'all']:
+        lines.extend([
+            "",
+            "Writing Productivity Analysis:",
+        ])
+        
+        # Writing velocity metrics
+        if hasattr(info_data, 'writing_velocity'):
+            lines.append(f"  Average writing velocity: {info_data.writing_velocity:.1f} words/day")
+            
+        # Most productive periods
+        if hasattr(info_data, 'most_productive_periods') and info_data.most_productive_periods:
+            lines.append("  Most productive periods (month, word count):")
+            for period, count in info_data.most_productive_periods:
+                lines.append(f"    - {period}: {count:,} words")
+                
+        # Word count by month
+        if hasattr(info_data, 'word_count_by_month') and info_data.word_count_by_month:
+            lines.append("  Recent monthly word counts:")
+            for month, count in list(info_data.word_count_by_month.items())[-6:]:  # Last 6 months
+                lines.append(f"    - {month}: {count:,} words")
+                
+        # Growth rate by year
+        if hasattr(info_data, 'growth_rate') and info_data.growth_rate:
+            lines.append("  Growth rate (notes/day):")
+            for year, rate in sorted(info_data.growth_rate.items()):
+                lines.append(f"    - {year}: {rate:.2f} notes/day ({rate*365:.1f} notes/year)")
+    
+    # Notable notes section
+    if focus in ['notable', 'all']:
+        lines.extend([
+            "",
+            "Notable Notes:",
+        ])
+        
+        # Longest notes
+        if hasattr(info_data, 'longest_notes') and info_data.longest_notes:
+            lines.append("  Longest notes (word count):")
+            for filename, word_count in info_data.longest_notes:
+                lines.append(f"    - {filename}: {word_count:,} words")
+                
+        # Shortest notes (non-empty)
+        if hasattr(info_data, 'shortest_notes') and info_data.shortest_notes:
+            lines.append("  Shortest notes (word count):")
+            for filename, word_count in info_data.shortest_notes:
+                lines.append(f"    - {filename}: {word_count} words")
+                
+        # Newest notes
+        if hasattr(info_data, 'newest_notes') and info_data.newest_notes:
+            lines.append("  Most recently created notes:")
+            for filename, date_str in info_data.newest_notes:
+                lines.append(f"    - {filename}: {date_str}")
+                
+        # Oldest notes
+        if hasattr(info_data, 'oldest_notes') and info_data.oldest_notes:
+            lines.append("  Oldest notes:")
+            for filename, date_str in info_data.oldest_notes:
+                lines.append(f"    - {filename}: {date_str}")
+                
+        # Untouched notes
+        if hasattr(info_data, 'untouched_notes') and info_data.untouched_notes:
+            lines.append("  Notes not modified in over a year:")
+            for filename, date_str in info_data.untouched_notes:
+                lines.append(f"    - {filename}: last modified {date_str}")
+    
+    # Advanced analytics section
+    if focus in ['advanced', 'all']:
+        # Tag clusters
+        if hasattr(info_data, 'tag_clusters') and info_data.tag_clusters:
+            lines.extend([
+                "",
+                "Advanced Analytics:",
+                "  Tag clusters (related tags):",
+            ])
+            for tag, related_tags in info_data.tag_clusters:
+                related_str = ", ".join(related_tags)
+                lines.append(f"    - {tag} → {related_str}")
     
     # Temporal analysis section
     if focus in ['dates', 'all']:
@@ -699,9 +1030,16 @@ def info(
         notes_by_year = info_data.notes_by_year
         if notes_by_year:
             for year, count in notes_by_year.items():
-                lines.append(f"    {year}: {count}")
+                lines.append(f"    {year}: {count} notes")
         else:
             lines.append("    N/A")
+            
+        # Add content age distribution if available
+        if hasattr(info_data, 'content_age') and info_data.content_age:
+            lines.append("")
+            lines.append("Content Age Distribution:")
+            for age_bucket, percentage in info_data.content_age.items():
+                lines.append(f"    {age_bucket}: {percentage:.1f}%")
     
     output = "\n".join(lines)
     use_color = (color == "always") or (color == "auto" and sys.stdout.isatty())
