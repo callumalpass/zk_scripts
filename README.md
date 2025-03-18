@@ -20,7 +20,7 @@ It evolved from a collection of personal scripts into this organized package.
 ### Additional Tools:
 
 -   **Bibliography Management:** Tools for managing references and integrating them with your notes for more academic workflows.
--   **Person Search:** Quickly find notes related to specific people, useful for journaling or contact management.
+-   **Wikilink Generator:** Create configurable wikilink insertion tools for any type of note (people, books, concepts, etc.) with customizable field display and alias selection.
 -   **Working Memory:** A tool for capturing thoughts and ideas quickly, with smart note creation and organization capabilities.
 -   **Workout Logger:** Track your workouts in markdown. Includes reporting capabilities.
 
@@ -360,6 +360,56 @@ These tools are useful for managing academic references, linking PDFs, and gener
 
 These were built out of the conviction that a full-blown reference manager like Zotero is not necessary. With these tools, you can keep the bibliographic information in the frontmatter of markdown files in your Zettelkasten. Since `pandoc` works with csl-json files, it is easy to convert this YAML frontmatter to a csl-valid bibliography file, ready for `pandoc` conversion of academic documents. Check out [biblio-note](https://github.com/callumalpass/biblio-note) for a script that helps to automate the creation of literature note files that can be converted to CSL valid bibliography json files. 
 
+### Wikilink Generator
+
+```bash
+# Use different profiles for different note types
+zk-wikilink --profile person
+zk-wikilink --profile book
+zk-wikilink --profile concept
+zk-wikilink --profile default  # No tag filter - all notes
+
+# List available profiles and their configurations
+zk-wikilink list-profiles
+
+# Show keyboard shortcuts
+zk-wikilink --list-hotkeys
+```
+
+The wikilink generator provides a highly configurable system for searching notes and inserting properly formatted wikilinks with appropriate aliases. You can define multiple profiles in your configuration file, each with its own specific settings:
+
+1. **Tag filters** - Which notes to include in the search (e.g., "person", "book", "concept")
+2. **Search fields** - Which metadata fields to search when filtering notes
+3. **Display fields** - Which fields to show in the fuzzy finder interface
+4. **Alias fields** - Which fields to use for the alias part of wikilinks in priority order
+
+Example configuration:
+
+```yaml
+wikilink:
+  # Profile for person notes
+  person:
+    filter_tags: ["person"]
+    search_fields: ["filename", "aliases", "givenName", "familyName"]
+    display_fields: ["filename", "aliases", "givenName", "familyName"]
+    alias_fields: ["aliases", "givenName"]
+    
+  # Profile for book notes
+  book:
+    filter_tags: ["book"]
+    search_fields: ["filename", "title", "author"]
+    display_fields: ["title", "author", "filename"]
+    alias_fields: ["title"]
+  
+  # Default profile (searches all notes)
+  default:
+    filter_tags: []  # No tag filter - all notes
+    search_fields: ["filename", "title", "tags"]
+    alias_fields: ["title", "aliases"]
+```
+
+This tool allows you to create specialized link-insertion tools for any type of note in your system, making it easy to maintain consistent wikilink formatting across your Zettelkasten.
+
 
 ### Workout Log
 
@@ -469,7 +519,7 @@ zk_core/
 │   ├── __init__.py
 │   ├── builder.py
 │   └── viewer.py
-├── person_search.py
+├── wikilink_generator.py
 └── workout_log.py
 ```
 

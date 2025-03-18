@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""
+Wikilink Generator CLI entry point.
+"""
+
+from zk_core.wikilink_generator import main
+
+if __name__ == "__main__":
+    main()
