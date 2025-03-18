@@ -89,10 +89,39 @@ bibview:
   bat_theme: "Dracula"  # Theme for bat preview
   bibview_open_doc_script: "~/bin/open_doc.sh"  # Script for opening documents
 
-# Person search configuration
-personSearch:
-  notes_dir: "~/notes"  # Path to notes directory
-  bat_command: "bat"  # Command for preview
+# Wikilink generator configuration
+wikilink:
+  # Profile for person notes
+  person:
+    filter_tags: ["person"]
+    search_fields: ["filename", "aliases", "givenName", "familyName"]
+    display_fields: ["filename", "aliases", "givenName", "familyName"]
+    alias_fields: ["aliases", "givenName"]
+    preview:
+      command: "bat"
+      window: "wrap:50%:<40(up)"
+    fzf:
+      delimiter: "::"
+      tiebreak: "begin,index"
+  
+  # Profile for book notes
+  book:
+    filter_tags: ["book"]
+    search_fields: ["filename", "title", "author"]
+    display_fields: ["title", "author", "filename"]
+    alias_fields: ["title"]
+  
+  # Profile for concept notes
+  concept:
+    filter_tags: ["concept"]
+    search_fields: ["filename", "title", "description"]
+    alias_fields: ["title"]
+  
+  # Default profile (searches all notes)
+  default:
+    filter_tags: []  # No tag filter - all notes
+    search_fields: ["filename", "title", "tags"]
+    alias_fields: ["title", "aliases"]
 
 # Global logging configuration
 logging:

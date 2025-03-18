@@ -52,7 +52,8 @@ class WikilinkConfig:
         self.name = name
         self.filter_tags = filter_tags or []
         self.search_fields = search_fields or ["filename"]
-        self.display_fields = display_fields or self.search_fields
+        # Ensure display_fields is a separate list, not just a reference to search_fields
+        self.display_fields = list(display_fields) if display_fields else list(self.search_fields)
         self.alias_fields = alias_fields or ["aliases", "title"]
         
         # Default preview config
@@ -181,21 +182,38 @@ def create_wikilink_from_selection(
     fields_parts = fields_output.split("::")
     field_values = {}
     
+    # Make sure we're correctly associating field names with their values
+    # The output of the query command will have values in the same order as the fields we requested
     for i, field in enumerate(all_fields):
         if i < len(fields_parts):
-            field_values[field] = fields_parts[i].strip()
+            # Only populate if the value is not empty
+            if fields_parts[i].strip():
+                field_values[field] = fields_parts[i].strip()
+            else:
+                field_values[field] = ""
         else:
             field_values[field] = ""
+            
+    if debug:
+        logger.debug(f"Parsed field values for alias selection: {field_values}")
     
     if debug:
         logger.debug(f"Retrieved fields: {field_values}")
     
     # Find the best alias based on the priority order in config.alias_fields
     alias = None
+    if debug:
+        logger.debug(f"Looking for alias using fields (in priority order): {config.alias_fields}")
+    
     for field in config.alias_fields:
         if field in field_values and field_values[field]:
             alias = field_values[field]
+            if debug:
+                logger.debug(f"Using '{field}' for alias: {alias}")
             break
+            
+    if debug and not alias:
+        logger.debug("Could not find any suitable alias, using basic wikilink")
     
     # Build the wikilink
     if alias:
@@ -252,8 +270,30 @@ def run_wikilink_generator(
             for tag in config.filter_tags:
                 query_args.extend(["--filter-tag", tag])
                 
-            # Add search fields
+            # We need to ensure filename is always the first field in query results
+            # even if it's not in the display fields
+            all_query_fields = []
+            
+            # Make sure filename is first in the query fields
+            if "filename" not in config.search_fields and "filename" not in config.display_fields:
+                all_query_fields.append("filename")
+            elif "filename" in config.search_fields:
+                all_query_fields.append("filename")
+            
+            # Add remaining search fields and display fields
             for field in config.search_fields:
+                if field != "filename" and field not in all_query_fields:
+                    all_query_fields.append(field)
+                    
+            for field in config.display_fields:
+                if field not in all_query_fields:
+                    all_query_fields.append(field)
+            
+            if debug:
+                logger.debug(f"Final query fields: {all_query_fields}")
+            
+            # Add all needed fields to query
+            for field in all_query_fields:
                 query_args.extend(["--fields", field])
             
             if debug:
@@ -279,13 +319,44 @@ def run_wikilink_generator(
         "--ellipsis", config.fzf_config["ellipsis"],
     ]
     
+    # We should use the same field ordering as used in the query
+    all_query_fields = []
+    
+    # Make sure filename is first in the query fields
+    if "filename" not in config.search_fields and "filename" not in config.display_fields:
+        all_query_fields.append("filename")
+    elif "filename" in config.search_fields:
+        all_query_fields.append("filename")
+    
+    # Add remaining search fields and display fields
+    for field in config.search_fields:
+        if field != "filename" and field not in all_query_fields:
+            all_query_fields.append(field)
+            
+    for field in config.display_fields:
+        if field not in all_query_fields:
+            all_query_fields.append(field)
+    
     # Calculate with-nth parameter based on display fields
     display_indices = []
-    for i in range(1, len(config.display_fields) + 1):
-        display_indices.append(str(i))
+    
+    # For each display field, find its position in the query results (1-based for FZF)
+    for display_field in config.display_fields:
+        if display_field in all_query_fields:
+            # Add 1 because FZF is 1-indexed
+            index = all_query_fields.index(display_field) + 1
+            display_indices.append(str(index))
+    
+    # Make sure we're getting proper string representation with FZF
+    display_indices_str = ",".join(display_indices)
+    
+    if debug:
+        logger.debug(f"All query fields: {all_query_fields}")
+        logger.debug(f"Display fields: {config.display_fields}")
+        logger.debug(f"Display indices: {display_indices_str}")
     
     additional_args.extend([
-        "--with-nth", ",".join(display_indices),
+        "--with-nth", display_indices_str,
         "--preview-label", config.preview_config["label"],
         "--preview", f"{config.preview_config['command']} {notes_dir}/{{1}}.md",
         "--preview-window", config.preview_config["window"],
@@ -407,7 +478,8 @@ def main():
                 name=profile,
                 filter_tags=profile_config.get("filter_tags", []),
                 search_fields=profile_config.get("search_fields", ["filename", "title"]),
-                display_fields=profile_config.get("display_fields", None),  # Will default to search_fields
+                # Explicitly use the display_fields or default to search_fields
+                display_fields=profile_config.get("display_fields", profile_config.get("search_fields", ["filename", "title"])),
                 alias_fields=profile_config.get("alias_fields", ["title", "aliases"]),
                 preview_config=profile_config.get("preview", None),
                 fzf_config=profile_config.get("fzf", None)
