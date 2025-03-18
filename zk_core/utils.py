@@ -56,7 +56,7 @@ def get_path_for_script(config: Dict[str, Any], section_key: str, script_key: st
     Args:
         config: Configuration dictionary
         section_key: Section name in config (e.g., "bibview")
-        script_key: Script key name (e.g., "getbibkeys_script")
+        script_key: Script key name (e.g., "open_doc_script")
         default_path: Default path if not found in config
         
     Returns:

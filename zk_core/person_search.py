@@ -71,14 +71,83 @@ from zk_core.fzf_utils import FzfHelper
 
 def main() -> None:
     """Main entry point for the person search module."""
-    parser = argparse.ArgumentParser(description="Person search utility")
-    parser.add_argument("--debug", action="store_true", help="Enable debug output")
-    parser.add_argument("--list-hotkeys", action="store_true", 
-                      help="Print a list of available fzf hotkeys and their functions, then exit")
-    args = parser.parse_args()
+    try:
+        import typer
+        from typing import Optional as OptionalType
+        from pathlib import Path
+        
+        app = typer.Typer(help="Search for person notes and insert as links")
+        
+        @app.command()
+        def search(
+            debug: bool = typer.Option(
+                False,
+                "--debug", "-d",
+                help="Enable debug output"
+            ),
+            list_hotkeys: bool = typer.Option(
+                False,
+                "--list-hotkeys", "-l",
+                help="Print a list of available fzf hotkeys and their functions, then exit"
+            ),
+            config_file: OptionalType[Path] = typer.Option(
+                None,
+                "--config", "-c",
+                help="Path to config file (default: ~/.config/zk_scripts/config.yaml)",
+                exists=False,
+                file_okay=True,
+                dir_okay=False
+            )
+        ) -> None:
+            """
+            Search for person notes and insert selected entries as wikilinks.
+            
+            This tool helps you search through notes tagged with 'person' and
+            insert properly formatted wikilinks with aliases into other notes.
+            """
+            # Create args object for backward compatibility
+            class Args:
+                pass
+                
+            args = Args()
+            args.debug = debug
+            args.list_hotkeys = list_hotkeys
+            
+            if config_file:
+                args.config = str(config_file)
+                
+            # Call the run function
+            run_person_search(args)
+            
+        # Run the app
+        app()
+            
+    except ImportError:
+        # Fall back to argparse if typer is not available
+        parser = argparse.ArgumentParser(description="Person search utility")
+        parser.add_argument("--debug", "-d", action="store_true", help="Enable debug output")
+        parser.add_argument("--list-hotkeys", "-l", action="store_true", 
+                          help="Print a list of available fzf hotkeys and their functions, then exit")
+        parser.add_argument("--config", "-c", help="Path to config file")
+        args = parser.parse_args()
+        
+        print("WARNING: Typer package not found, falling back to basic argparse implementation.")
+        print("For a better CLI experience, install typer: pip install typer")
+        
+        # Call the run function
+        run_person_search(args)
 
+
+def run_person_search(args) -> None:
+    """Run the person search with the given arguments."""
     # Load configuration
-    config = load_config()
+    config_file = getattr(args, 'config', None)
+    
+    if config_file:
+        from zk_core.config import load_config_from_file
+        config = load_config_from_file(config_file)
+    else:
+        config = load_config()
     
     # Get configuration values
     notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
@@ -89,7 +158,7 @@ def main() -> None:
     bat_command = get_config_value(person_search_config, "bat_command", "bat")
     
     # Log configuration if in debug mode
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.setLevel(logging.DEBUG)
         logger.debug(f"Notes directory: {notes_dir}")
         logger.debug(f"bat command: {bat_command}")
@@ -98,14 +167,15 @@ def main() -> None:
     fzf_manager = build_person_search_fzf_manager(notes_dir, bat_command)
     
     # If --list-hotkeys was specified, print the hotkey help and exit
-    if args.list_hotkeys:
+    if hasattr(args, 'list_hotkeys') and args.list_hotkeys:
         FzfHelper.print_hotkeys(fzf_manager, "PERSON SEARCH KEYBOARD SHORTCUTS")
         sys.exit(0)
     
     # Change to notes directory
     try:
         os.chdir(notes_dir)
-        logger.debug(f"Changed to directory: {notes_dir}")
+        if hasattr(args, 'debug') and args.debug:
+            logger.debug(f"Changed to directory: {notes_dir}")
     except Exception as e:
         logger.error(f"Unable to change directory to {notes_dir}: {e}")
         sys.exit(1)
@@ -128,7 +198,7 @@ def main() -> None:
                 "--color", "always"
             ]
             
-            if args.debug:
+            if hasattr(args, 'debug') and args.debug:
                 logger.debug(f"Running query with args: {' '.join(query_args)}")
             
             # Run the query and capture output
@@ -158,7 +228,7 @@ def main() -> None:
     # Get complete fzf arguments
     fzf_args = fzf_manager.get_fzf_args(additional_args)
     
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.debug(f"Running fzf command: {' '.join(fzf_args)}")
     
     try:
@@ -170,11 +240,12 @@ def main() -> None:
         sys.exit(1)
     
     selection = fzf_result.stdout.strip()
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.debug(f"fzf selection: {selection}")
     
     if not selection:
-        logger.debug("No selection made")
+        if hasattr(args, 'debug') and args.debug:
+            logger.debug("No selection made")
         sys.exit(0)
     
     # Parse the selection (fields separated by "::")
@@ -194,7 +265,7 @@ def main() -> None:
             "--fields", "givenName"
         ]
         
-        if args.debug:
+        if hasattr(args, 'debug') and args.debug:
             logger.debug(f"Running fields command with args: {' '.join(fields_args)}")
         
         # Run the query with stdin input
@@ -220,18 +291,20 @@ def main() -> None:
     else:
         transform = f"[[{filename}|{given_name}]]"
     
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.debug(f"Final wikilink: {transform}")
     
     # Send the processed link to the active tmux pane
     try:
         subprocess.run(["tmux", "send-keys", transform], check=True)
-        logger.debug("Sent link to tmux")
+        if hasattr(args, 'debug') and args.debug:
+            logger.debug("Sent link to tmux")
     except Exception as e:
         logger.error(f"Error sending keys to tmux: {e}")
         sys.exit(1)
     
-    logger.debug("Person search completed successfully")
+    if hasattr(args, 'debug') and args.debug:
+        logger.debug("Person search completed successfully")
 
 
 if __name__ == "__main__":

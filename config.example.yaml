@@ -44,7 +44,6 @@ bibview:
   zk_script: "~/bin/zk"  # Path to zk script
   link_zathura_tmp_script: "~/bin/link_zathura.sh"  # Script for linking Zathura
   obsidian_socket: "/tmp/obsidiansocket"  # Socket for Obsidian
-  getbibkeys_script: "~/bin/getbibkeys.sh"  # Script for getting bib keys
 
 # Person search configuration
 personSearch:

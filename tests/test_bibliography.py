@@ -59,44 +59,59 @@ def sample_bibkeys():
     }
 
 
-@patch("subprocess.run")
-def test_generate_citation_keys(mock_run, sample_bibkeys):
+def test_generate_citation_keys(sample_bibkeys):
     """Test generating citation keys from bibliography."""
-    # Mock subprocess result
-    mock_result = MagicMock()
-    mock_result.stdout = json.dumps(sample_bibkeys)
-    mock_run.return_value = mock_result
-    
     # Create temporary files
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_output:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_index:
+        # Create a sample index with literature notes
+        literature_notes = [
+            {"filename": "smith2020", "tags": ["literature_note"]},
+            {"filename": "jones2019", "tags": ["literature_note"]},
+            {"filename": "brown2021", "tags": ["literature_note"]}
+        ]
+        json.dump(literature_notes, tmp_index)
+        index_path = tmp_index.name
+    
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp_output:
         output_path = tmp_output.name
     
-    try:
-        # Call the function
-        result = generate_citation_keys(
-            getbibkeys_script="script.py",
-            biblib_dir="/path/to/biblib",
-            notes_dir="/path/to/notes",
-            output_file=output_path
-        )
-        
-        # Check that the script was called
-        assert mock_run.called
-        
-        # Check that output was written
-        assert os.path.exists(output_path)
-        
-        # Check content of output file
-        with open(output_path, "r") as f:
-            data = json.load(f)
-        
-        # Verify keys match
-        assert set(data.keys()) == {"smith2020", "jones2019", "brown2021"}
-        
-    finally:
-        # Clean up
-        if os.path.exists(output_path):
-            os.unlink(output_path)
+    # Create temporary directory for biblib
+    with tempfile.TemporaryDirectory() as biblib_dir:
+        try:
+            # Create the subdirectories in biblib_dir as a fallback
+            for key in sample_bibkeys.keys():
+                os.makedirs(os.path.join(biblib_dir, key), exist_ok=True)
+            
+            # Call the function
+            result = generate_citation_keys(
+                biblib_dir=biblib_dir,
+                notes_dir=os.path.dirname(output_path),
+                index_file=index_path
+            )
+            
+            # Check result is True
+            assert result is True
+            
+            # Check that citekeylist.md was created
+            output_md = os.path.join(os.path.dirname(output_path), "citekeylist.md")
+            assert os.path.exists(output_md)
+            
+            # Check content has @ prefixed keys
+            with open(output_md, "r") as f:
+                lines = f.readlines()
+                keys = [line.strip() for line in lines]
+                # Check keys are prefixed with @
+                assert all(k.startswith('@') for k in keys)
+                # Check all keys are included
+                for key in sample_bibkeys.keys():
+                    assert f"@{key}" in keys
+            
+        finally:
+            # Clean up
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+            if os.path.exists(index_path):
+                os.unlink(index_path)
 
 
 def test_generate_bibliography(sample_index, sample_bibkeys):

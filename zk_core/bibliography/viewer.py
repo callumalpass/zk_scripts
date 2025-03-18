@@ -367,19 +367,20 @@ def get_bibview_config(config: Dict[str, Any], args: Optional[Any] = None) -> Di
     }
 
 
-def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[argparse.Namespace] = None) -> int:
+def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[Any] = None) -> int:
     """
     Main function to run bibliography viewer.
     
     Args:
         config: Optional configuration dictionary (loaded if not provided)
-        args: Optional command line arguments
+        args: Optional command line arguments (can be from argparse or typer)
         
     Returns:
         Exit code (0 for success, non-zero for failure)
     """
     # Create default args if none provided
     if args is None:
+        import argparse
         parser = argparse.ArgumentParser(description="Bibliography viewer")
         parser.add_argument(
             "--sort", 
@@ -390,18 +391,28 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[argparse.
         parser.add_argument("--debug", action="store_true", help="Enable debug output")
         parser.add_argument("--list-hotkeys", action="store_true", 
                           help="Print a list of available fzf hotkeys and their functions, then exit")
+        parser.add_argument("--config", help="Path to config file")
         args = parser.parse_args()
     
     # Set the default editor
     os.environ["EDITOR"] = "nvim"
     
     # Set logging level based on arguments
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.setLevel(logging.DEBUG)
     
+    # Check if config file was specified
+    config_file = None
+    if hasattr(args, 'config') and args.config:
+        config_file = args.config
+        
     # Load configuration if not provided
     if config is None:
-        config = load_config()
+        if config_file:
+            from zk_core.config import load_config_from_file
+            config = load_config_from_file(config_file)
+        else:
+            config = load_config()
     
     # Get bibview configuration
     bibview_config = get_bibview_config(config, args)
@@ -463,7 +474,7 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[argparse.
     )
     
     # If --list-hotkeys was specified, print the hotkey help and exit
-    if args.list_hotkeys:
+    if hasattr(args, 'list_hotkeys') and args.list_hotkeys:
         FzfHelper.print_hotkeys(fzf_manager, "BIBLIOGRAPHY VIEWER KEYBOARD SHORTCUTS")
         return 0
         

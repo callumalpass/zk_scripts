@@ -232,28 +232,119 @@ def print_hotkeys(fzf_manager: FzfManager) -> None:
 
 def main() -> None:
     """Main entry point for the fzf interface."""
-    # Parse command-line arguments.
-    parser = argparse.ArgumentParser(
-        description="A fuzzy search interface for Zettelkasten notes."
-    )
-    parser.add_argument("--skip-index", action="store_true",
-                        help="Skip running the index script before launching fzf.")
-    parser.add_argument("--skip-notelist", action="store_true",
-                        help="Skip launching the background process that updates the notelist.")
-    parser.add_argument("--skip-tmux", action="store_true",
-                        help="Skip sending the link output to tmux.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print the commands that would be executed, but do not execute them.")
-    parser.add_argument("--debug", action="store_true",
-                        help="Enable debug output.")
-    parser.add_argument("--list-hotkeys", action="store_true",
-                        help="Print a list of available fzf hotkeys and their functions, then exit.")
-    parser.add_argument("--config-file", help="Specify config file path")
-    parser.add_argument("--socket-path", help="Specify custom Neovim socket path")
-    args = parser.parse_args()
+    try:
+        import typer
+        from typing import Optional as OptionalType
+        from enum import Enum
+        from pathlib import Path
+        
+        app = typer.Typer(help="A fuzzy search interface for Zettelkasten notes")
+        
+        @app.command()
+        def search(
+            skip_index: bool = typer.Option(
+                False,
+                "--skip-index",
+                help="Skip running the index script before launching fzf"
+            ),
+            skip_notelist: bool = typer.Option(
+                False,
+                "--skip-notelist",
+                help="Skip launching the background process that updates the notelist"
+            ),
+            skip_tmux: bool = typer.Option(
+                False,
+                "--skip-tmux",
+                help="Skip sending the link output to tmux"
+            ),
+            dry_run: bool = typer.Option(
+                False,
+                "--dry-run",
+                help="Print the commands that would be executed, but do not execute them"
+            ),
+            debug: bool = typer.Option(
+                False,
+                "--debug", "-d",
+                help="Enable debug output"
+            ),
+            list_hotkeys: bool = typer.Option(
+                False,
+                "--list-hotkeys",
+                help="Print a list of available fzf hotkeys and their functions, then exit"
+            ),
+            config_file: OptionalType[str] = typer.Option(
+                None,
+                "--config-file", "-c",
+                help="Specify config file path"
+            ),
+            socket_path: OptionalType[str] = typer.Option(
+                None,
+                "--socket-path", "-s",
+                help="Specify custom Neovim socket path"
+            ),
+        ) -> None:
+            """
+            Search and interact with your Zettelkasten notes using a fuzzy finder interface.
+            
+            This interactive tool provides a powerful way to browse, search, and manage your notes
+            with keyboard shortcuts for common operations.
+            """
+            # Create a class to mimic the argparse namespace for backward compatibility
+            class Args:
+                pass
+                
+            args = Args()
+            args.skip_index = skip_index
+            args.skip_notelist = skip_notelist
+            args.skip_tmux = skip_tmux
+            args.dry_run = dry_run 
+            args.debug = debug
+            args.list_hotkeys = list_hotkeys
+            args.config_file = config_file
+            args.socket_path = socket_path
+            
+            # Call the run function
+            run_fzf_interface(args)
+        
+        # Run the app if typer is available
+        app()
+        
+    except ImportError:
+        # Fall back to argparse if typer is not available
+        import argparse
+        
+        print("WARNING: Typer package not found, falling back to basic argparse implementation.")
+        print("For a better CLI experience, install typer: pip install typer")
+        
+        parser = argparse.ArgumentParser(
+            description="A fuzzy search interface for Zettelkasten notes."
+        )
+        parser.add_argument("--skip-index", action="store_true",
+                            help="Skip running the index script before launching fzf.")
+        parser.add_argument("--skip-notelist", action="store_true",
+                            help="Skip launching the background process that updates the notelist.")
+        parser.add_argument("--skip-tmux", action="store_true",
+                            help="Skip sending the link output to tmux.")
+        parser.add_argument("--dry-run", action="store_true",
+                            help="Print the commands that would be executed, but do not execute them.")
+        parser.add_argument("--debug", action="store_true",
+                            help="Enable debug output.")
+        parser.add_argument("--list-hotkeys", action="store_true",
+                            help="Print a list of available fzf hotkeys and their functions, then exit.")
+        parser.add_argument("--config-file", help="Specify config file path")
+        parser.add_argument("--socket-path", help="Specify custom Neovim socket path")
+        args = parser.parse_args()
+        
+        # Call the run function
+        run_fzf_interface(args)
+
+
+def run_fzf_interface(args) -> None:
+    """Run the FZF interface with the given arguments."""
 
     # Load configuration
-    config = load_config(args.config_file)
+    config_file = getattr(args, 'config_file', None)
+    config = load_config(config_file)
     
     # Get necessary configuration values using utility functions
     notes_dir = get_config_value(config, "notes_dir", DEFAULT_NOTES_DIR)
@@ -274,7 +365,7 @@ def main() -> None:
     from zk_core.utils import get_socket_path
     socket_path = get_socket_path(config, args)
 
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.setLevel(logging.DEBUG)
         logger.debug("NOTES_DIR = %s", notes_dir)
         logger.debug("INDEX_FILE = %s", index_file)
@@ -299,16 +390,16 @@ def main() -> None:
         notes_diary_subdir, bat_theme, socket_path
     )
     
-    if args.list_hotkeys:
+    if hasattr(args, 'list_hotkeys') and args.list_hotkeys:
         print_hotkeys(fzf_manager)
         sys.exit(0)
 
     # Launch a background process that writes a notelist (unless skipped).
     home = Path.home()
     notelist_path = home / "Documents" / "notelist.md"
-    if not args.skip_notelist:
+    if not hasattr(args, 'skip_notelist') or not args.skip_notelist:
         try:
-            if args.dry_run:
+            if hasattr(args, 'dry_run') and args.dry_run:
                 print(f"[DRY-RUN] Would launch: {py_zk} list --mode notes -i {index_file} --format-string '[[{{filename}}|{{title}}]]'")
             else:
                 with open(notelist_path, "w") as nl:
@@ -316,33 +407,33 @@ def main() -> None:
                     subprocess.Popen(["zk-query", "list", "--mode", "notes", "-i", index_file,
                                      "--format-string", "[[{filename}|{title}]]"],
                                      stdout=nl)
-                if args.debug:
+                if hasattr(args, 'debug') and args.debug:
                     logger.debug("Launched background notelist update.")
         except Exception as e:
             logger.error(f"Error launching notelist update: {e}")
     else:
-        if args.debug:
+        if hasattr(args, 'debug') and args.debug:
             logger.debug("Skipping notelist update (--skip-notelist).")
 
     # Run the index script (unless skipped)
-    if not args.skip_index:
-        if args.dry_run:
+    if not hasattr(args, 'skip_index') or not args.skip_index:
+        if hasattr(args, 'dry_run') and args.dry_run:
             print(f"[DRY-RUN] Would run index script: {zk_index_script} run")
         else:
             try:
                 # Use the entry point script name directly
                 subprocess.run(["zk-index", "run"], check=False)
-                if args.debug:
+                if hasattr(args, 'debug') and args.debug:
                     logger.debug("Ran index script in foreground.")
             except Exception as e:
                 logger.error(f"Error running zk-index script: {e}")
     else:
-        if args.debug:
+        if hasattr(args, 'debug') and args.debug:
             logger.debug("Skipping index script (--skip-index).")
 
     # Build the py_zk list command.
     py_zk_list_cmd = ["zk-query", "list", "--mode", "notes", "-i", index_file, "--color", "always"]
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.debug("py_zk_list_cmd = %s", " ".join(py_zk_list_cmd))
 
     # Build the fzf command with additional arguments
@@ -369,10 +460,10 @@ def main() -> None:
     # Get complete fzf arguments
     fzf_args = fzf_manager.get_fzf_args(additional_args)
                     
-    if args.debug:
+    if hasattr(args, 'debug') and args.debug:
         logger.debug("fzf args: %s", " ".join(fzf_args))
 
-    if args.dry_run:
+    if hasattr(args, 'dry_run') and args.dry_run:
         print(f"[DRY-RUN] Would run: {' '.join(py_zk_list_cmd)} | {' '.join(fzf_args)}")
         sys.exit(0)
         
@@ -381,7 +472,7 @@ def main() -> None:
         p1 = subprocess.Popen(py_zk_list_cmd, stdout=subprocess.PIPE)
         fzf_result = subprocess.run(fzf_args, stdin=p1.stdout)
         p1.stdout.close()
-        if args.debug:
+        if hasattr(args, 'debug') and args.debug:
             logger.debug(f"fzf returned code {fzf_result.returncode}")
     except Exception as e:
         logger.error(f"Error running fzf: {e}")
@@ -393,12 +484,12 @@ def main() -> None:
             with open(templink, "r") as tf:
                 link = tf.read().strip()
             if link:
-                if args.skip_tmux:
-                    if args.debug:
+                if hasattr(args, 'skip_tmux') and args.skip_tmux:
+                    if hasattr(args, 'debug') and args.debug:
                         logger.debug(f"Skipping sending tmux; link: {link}")
                 else:
                     subprocess.run(["tmux", "send-keys", "-l", link])
-                    if args.debug:
+                    if hasattr(args, 'debug') and args.debug:
                         logger.debug(f"Sent link to tmux: {link}")
         except Exception as e:
             logger.error(f"Error processing temporary link file: {e}")
