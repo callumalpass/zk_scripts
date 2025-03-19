@@ -225,8 +225,8 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
         info.untagged_orphan_notes_count = untagged_orphan_count
         
         if dates:
-            min_date = min(dates)
-            max_date = max(dates)
+            min_date = min(creation_dates)
+            max_date = max(creation_dates)
             info.date_range = f"{min_date} to {max_date}"
             
         # Calculate dangling links
@@ -263,7 +263,7 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
         info.median_outgoing_links = float(np.median(outgoing_links_counts)) if outgoing_links_counts else 0
         info.average_backlinks = sum(backlinks_counts) / note_count if note_count else 0
         info.median_backlinks = float(np.median(backlinks_counts)) if backlinks_counts else 0
-        info.highly_connected_notes = sorted(highly_connected_notes, key=lambda x: x[1], reverse=True)[:5]
+        info.highly_connected_notes = sorted(highly_connected_notes, key=lambda x: x[1], reverse=True)[:10]
         
         # Calculate network density (ratio of actual connections to possible connections)
         possible_connections = note_count * (note_count - 1)
@@ -282,7 +282,7 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
                 overlap = len(outgoing_set.intersection(backlink_set))
                 if overlap < 2 and len(outgoing_set) + len(backlink_set) > 5:
                     bridge_candidates.append((note.filename, len(outgoing_set) + len(backlink_set)))
-        info.bridge_notes = sorted(bridge_candidates, key=lambda x: x[1], reverse=True)[:5]
+        info.bridge_notes = sorted(bridge_candidates, key=lambda x: x[1], reverse=True)[:10]
         
         # Analysis of tag co-occurrence
         tag_co_occurrence = Counter(tag_pairs)
@@ -306,14 +306,14 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
                         related.append(other)
                 if related:
                     tag_clusters.append((tag, related[:3]))  # Top 3 related tags
-            info.tag_clusters = tag_clusters[:5]  # Top 5 clusters
+            info.tag_clusters = tag_clusters[:10]  # Top 5 clusters
         
         # Reference and alias stats
         info.total_references = sum(reference_counts)
         info.average_references = info.total_references / note_count if note_count else 0
         info.total_aliases = sum(alias_counts)
         info.average_aliases = info.total_aliases / note_count if note_count else 0
-        info.citation_hubs = sorted(citation_rich_notes, key=lambda x: x[1], reverse=True)[:5]
+        info.citation_hubs = sorted(citation_rich_notes, key=lambda x: x[1], reverse=True)[:10]
         
         # Monthly creation patterns
         info.notes_by_month = {month_names[month-1]: creation_month_counter.get(month, 0) 
@@ -353,11 +353,11 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
             info.longest_notes = [(n["filename"], n["word_count"]) 
                                 for n in sorted(notes_with_metadata, 
                                                 key=lambda x: x["word_count"], 
-                                                reverse=True)[:5]]
+                                                reverse=True)[:10]]
             
             info.shortest_notes = [(n["filename"], n["word_count"]) 
                                  for n in sorted(notes_with_metadata, 
-                                                 key=lambda x: x["word_count"])[:5] 
+                                                 key=lambda x: x["word_count"])[:10] 
                                  if n["word_count"] > 0]  # Exclude empty notes
             
             # Find newest and oldest notes
@@ -366,18 +366,18 @@ def get_index_info(notes: List[Note]) -> IndexInfo:
                 info.newest_notes = [(n["filename"], str(n["created"])) 
                                     for n in sorted(dated_notes, 
                                                   key=lambda x: x["created"], 
-                                                  reverse=True)[:5]]
+                                                  reverse=True)[:10]]
                 
                 info.oldest_notes = [(n["filename"], str(n["created"])) 
                                     for n in sorted(dated_notes, 
-                                                  key=lambda x: x["created"])[:5]]
+                                                  key=lambda x: x["created"])[:10]]
                 
                 # Find untouched notes (not modified in a long time)
                 untouched_threshold = today - datetime.timedelta(days=365)  # 1 year
                 untouched = [(n["filename"], str(n["modified"])) 
                             for n in notes_with_metadata 
                             if n["modified"] and n["modified"] < untouched_threshold]
-                info.untouched_notes = sorted(untouched, key=lambda x: x[1])[:5]
+                info.untouched_notes = sorted(untouched, key=lambda x: x[1])[:10]
         
         # Calculate content age distribution (percentage of content by age)
         if creation_dates:

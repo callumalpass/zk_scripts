@@ -761,7 +761,7 @@ def info(
         if hasattr(info_data, 'citation_hubs') and info_data.citation_hubs:
             lines.append("  Citation-rich notes:")
             for note_filename, ref_count in info_data.citation_hubs:
-                lines.append(f"    - {note_filename}: {ref_count} references")
+                lines.append(f"     {note_filename}:: {ref_count} references")
     
     # Network metrics section
     if focus in ['network', 'all']:
@@ -792,7 +792,7 @@ def info(
         if info_data.highly_connected_notes:
             lines.append("  Most connected notes (connection hub notes):")
             for note_filename, connection_count in info_data.highly_connected_notes:
-                lines.append(f"    - {note_filename}: {connection_count} connections")
+                lines.append(f"     {note_filename}:: {connection_count} connections")
         else:
             lines.append("  No highly connected notes found")
             
@@ -800,7 +800,7 @@ def info(
         if hasattr(info_data, 'bridge_notes') and info_data.bridge_notes:
             lines.append("  Bridge notes (connect different clusters):")
             for note_filename, connection_count in info_data.bridge_notes:
-                lines.append(f"    - {note_filename}: {connection_count} connections")
+                lines.append(f"     {note_filename}:: {connection_count} connections")
     
     # Writing productivity analysis section
     if focus in ['writing', 'all']:
@@ -842,31 +842,31 @@ def info(
         if hasattr(info_data, 'longest_notes') and info_data.longest_notes:
             lines.append("  Longest notes (word count):")
             for filename, word_count in info_data.longest_notes:
-                lines.append(f"    - {filename}: {word_count:,} words")
+                lines.append(f"     {filename}:: {word_count:,} words")
                 
         # Shortest notes (non-empty)
         if hasattr(info_data, 'shortest_notes') and info_data.shortest_notes:
             lines.append("  Shortest notes (word count):")
             for filename, word_count in info_data.shortest_notes:
-                lines.append(f"    - {filename}: {word_count} words")
+                lines.append(f"     {filename}:: {word_count} words")
                 
         # Newest notes
         if hasattr(info_data, 'newest_notes') and info_data.newest_notes:
             lines.append("  Most recently created notes:")
             for filename, date_str in info_data.newest_notes:
-                lines.append(f"    - {filename}: {date_str}")
+                lines.append(f"     {filename}:: {date_str}")
                 
         # Oldest notes
         if hasattr(info_data, 'oldest_notes') and info_data.oldest_notes:
             lines.append("  Oldest notes:")
             for filename, date_str in info_data.oldest_notes:
-                lines.append(f"    - {filename}: {date_str}")
+                lines.append(f"     {filename}:: {date_str}")
                 
         # Untouched notes
         if hasattr(info_data, 'untouched_notes') and info_data.untouched_notes:
             lines.append("  Notes not modified in over a year:")
             for filename, date_str in info_data.untouched_notes:
-                lines.append(f"    - {filename}: last modified {date_str}")
+                lines.append(f"     {filename}:: last modified {date_str}")
     
     # Advanced analytics section
     if focus in ['advanced', 'all']:

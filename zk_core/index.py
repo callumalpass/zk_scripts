@@ -21,7 +21,7 @@ import sys
 import json
 import logging
 import time
-from datetime import date
+import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
@@ -92,9 +92,45 @@ def process_markdown_file(filepath: str,
         "references": references,
     }
     result.update(meta)
-    # DATE-CREATED CHANGE:
-    if "dateModified" in result and "dateCreated" not in result:
-        result["dateCreated"] = result["dateModified"]
+    # # Handle dateCreated field
+    # if "dateCreated" not in result:
+    #     # Primary fallback: use date if available
+    #     if "date" in result:
+    #         try:
+    #             result["dateCreated"] = result["date"]
+    #         except Exception as e:
+    #             logger.info(f"Failed to get file creation time for {filepath}: {e}")
+    
+    # Standardize date formats
+    try:
+        for date_field in ["dateCreated", "dateModified"]:
+            if date_field in result:
+                # Handle different date formats
+                date_value = result[date_field]
+                if isinstance(date_value, (datetime.datetime, datetime.date)):
+                    # Already a datetime object, convert to ISO format
+                    result[date_field] = date_value.isoformat()
+                elif isinstance(date_value, str):
+                    # Various string formats to try
+                    formats = [
+                        "%Y-%m-%d",  # 2023-01-01
+                        "%Y-%m-%dT%H:%M:%S",  # 2023-01-01T12:30:45
+                        "%Y-%m-%dT%H:%M:%S.%f",  # 2023-01-01T12:30:45.123456
+                        "%Y-%m-%d %H:%M:%S",  # 2023-01-01 12:30:45
+                        "%d/%m/%Y",  # 01/01/2023
+                        "%m/%d/%Y",  # 01/01/2023
+                    ]
+                    
+                    # Try to parse with each format
+                    for fmt in formats:
+                        try:
+                            dt = datetime.datetime.strptime(date_value, fmt)
+                            result[date_field] = dt.isoformat()
+                            break
+                        except ValueError:
+                            continue
+    except Exception as e:
+        logger.warning(f"Error standardizing date formats: {e}")
     if generate_embeddings:
         if not openai.api_key:
             openai.api_key = os.getenv("OPEN_AI_KEY")
