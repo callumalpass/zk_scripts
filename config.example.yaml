@@ -36,12 +36,11 @@ bibview:
   bibliography_json: "~/Dropbox/bibliography.json"  # Path to bibliography JSON
   dropbox_bibliography_json: "~/Dropbox/bibliography.json"  # Optional additional bibliography output path
   bibhist: "~/.bibhist"  # Path to history file
-  library: "~/biblib"  # Path to bibliography library
+  library: "~/biblib"  # Path to pdf library
   notes_dir_for_zk: "~/notes"  # Path for Zettelkasten notes
   bat_theme: "Dracula"  # Theme for bat preview
   bibview_open_doc_script: "~/bin/open_doc.sh"  # Script for opening documents
   llm_path: "~/bin/llm"  # Path to LLM script
-  zk_script: "~/bin/zk"  # Path to zk script
   link_zathura_tmp_script: "~/bin/link_zathura.sh"  # Script for linking Zathura
   obsidian_socket: "/tmp/obsidiansocket"  # Socket for Obsidian
 

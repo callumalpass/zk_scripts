@@ -26,6 +26,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from typing import Dict, List, Tuple, Any, Optional
 from pathlib import Path
+from dateutil import parser
 
 # Additional import for embedding generation
 import openai
@@ -92,14 +93,14 @@ def process_markdown_file(filepath: str,
         "references": references,
     }
     result.update(meta)
-    # # Handle dateCreated field
-    # if "dateCreated" not in result:
-    #     # Primary fallback: use date if available
-    #     if "date" in result:
-    #         try:
-    #             result["dateCreated"] = result["date"]
-    #         except Exception as e:
-    #             logger.info(f"Failed to get file creation time for {filepath}: {e}")
+    # Handle dateCreated field
+    if "dateCreated" not in result:
+        # Primary fallback: use date if available
+        if "date" in result:
+            try:
+                result["dateCreated"] = result["date"]
+            except Exception as e:
+                logger.info(f"Failed to get file creation time for {filepath}: {e}")
     
     # Standardize date formats
     try:
@@ -107,28 +108,13 @@ def process_markdown_file(filepath: str,
             if date_field in result:
                 # Handle different date formats
                 date_value = result[date_field]
-                if isinstance(date_value, (datetime.datetime, datetime.date)):
-                    # Already a datetime object, convert to ISO format
-                    result[date_field] = date_value.isoformat()
-                elif isinstance(date_value, str):
-                    # Various string formats to try
-                    formats = [
-                        "%Y-%m-%d",  # 2023-01-01
-                        "%Y-%m-%dT%H:%M:%S",  # 2023-01-01T12:30:45
-                        "%Y-%m-%dT%H:%M:%S.%f",  # 2023-01-01T12:30:45.123456
-                        "%Y-%m-%d %H:%M:%S",  # 2023-01-01 12:30:45
-                        "%d/%m/%Y",  # 01/01/2023
-                        "%m/%d/%Y",  # 01/01/2023
-                    ]
-                    
-                    # Try to parse with each format
-                    for fmt in formats:
-                        try:
-                            dt = datetime.datetime.strptime(date_value, fmt)
-                            result[date_field] = dt.isoformat()
-                            break
-                        except ValueError:
-                            continue
+                if isinstance(date_value, str):
+                    try:
+                        dt = parser.parse(date_value)
+                        result[date_field] = dt.isoformat()
+                    except ValueError:
+                        logger.warning(f"{filepath}: Could not parse date string '{date_value}'")
+                        continue
     except Exception as e:
         logger.warning(f"Error standardizing date formats: {e}")
     if generate_embeddings:

@@ -127,10 +127,8 @@ def create_default_config(config_file: Path) -> Dict[str, Any]:
             "bat_theme": "Dracula",
             "bibview_open_doc_script": "~/bin/open_doc.sh",
             "llm_path": "~/bin/llm",
-            "zk_script": "~/bin/zk",
             "link_zathura_tmp_script": "~/bin/link_zathura.sh",
-            "obsidian_socket": "/tmp/obsidiansocket",
-            "getbibkeys_script": "~/bin/getbibkeys.sh"
+            "obsidian_socket": "/tmp/obsidiansocket"
         },
         "personSearch": {
             "notes_dir": DEFAULT_NOTES_DIR,

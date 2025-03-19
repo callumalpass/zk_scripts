@@ -206,16 +206,6 @@ def build_bibview_fzf_manager(
             ),
         ])
     
-    if zk_script and notes_dir_for_zk:
-        manager.add_bindings([
-            FzfBinding(
-                key="ctrl-a",
-                command=f"Ctrl-a:execute[{zk_script} -W \"{notes_dir_for_zk}\" list --format '{{{{path}}}} | {{{{title}}}} |{{{{tags}}}}' `rg {{1}} \"{notes_dir_for_zk}\" -l || echo 'error'` | ~/mybin/rgnotesearch ]",
-                description="List ZK notes referencing this entry",
-                category="Notes"
-            ),
-        ])
-    
     # Add bindings dependent on specific tools
     if os.path.exists(os.path.expanduser("~/mybin/addToReadingList")):
         manager.add_bindings([
@@ -333,7 +323,6 @@ def get_bibview_config(config: Dict[str, Any], args: Optional[Any] = None) -> Di
     bibview_open_doc_script = get_config_value(bibview_config, "bibview_open_doc_script", "")
     llm_path = get_config_value(bibview_config, "llm_path", "")
     bat_theme = get_config_value(bibview_config, "bat_theme", "DEFAULT")
-    zk_script = get_config_value(bibview_config, "zk_script", "")
     link_zathura_tmp_script = get_config_value(bibview_config, "link_zathura_tmp_script", "")
     obsidian_socket = get_config_value(bibview_config, "obsidian_socket", "")
     
@@ -348,8 +337,6 @@ def get_bibview_config(config: Dict[str, Any], args: Optional[Any] = None) -> Di
         bibview_open_doc_script = resolve_path(bibview_open_doc_script)
     if llm_path:
         llm_path = resolve_path(llm_path)
-    if zk_script:
-        zk_script = resolve_path(zk_script)
     if link_zathura_tmp_script:
         link_zathura_tmp_script = resolve_path(link_zathura_tmp_script)
         
@@ -361,7 +348,6 @@ def get_bibview_config(config: Dict[str, Any], args: Optional[Any] = None) -> Di
         "bibview_open_doc_script": bibview_open_doc_script,
         "llm_path": llm_path,
         "bat_theme": bat_theme,
-        "zk_script": zk_script,
         "link_zathura_tmp_script": link_zathura_tmp_script,
         "obsidian_socket": obsidian_socket
     }
@@ -423,7 +409,6 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[Any] = No
     bibview_open_doc_script = bibview_config["bibview_open_doc_script"]
     llm_path = bibview_config["llm_path"]
     bat_theme = bibview_config["bat_theme"]
-    zk_script = bibview_config["zk_script"]
     link_zathura_tmp_script = bibview_config["link_zathura_tmp_script"]
     obsidian_socket = bibview_config["obsidian_socket"]
     
@@ -435,7 +420,6 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[Any] = No
         logger.debug(f"library: '{library}'")
         logger.debug(f"notes_dir_for_zk: '{notes_dir_for_zk}'")
         logger.debug(f"bibview_open_doc_script: '{bibview_open_doc_script}'")
-        logger.debug(f"zk_script: '{zk_script}'")
         logger.debug(f"link_zathura_tmp_script: '{link_zathura_tmp_script}'")
     
     # Check minimum required config values
@@ -447,12 +431,6 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[Any] = No
     if bibview_open_doc_script and not os.path.exists(bibview_open_doc_script):
         logger.warning(f"Script not found: {bibview_open_doc_script}")
         logger.warning("Some document opening features will be disabled")
-    
-    if zk_script and not os.path.exists(zk_script):
-        logger.warning(f"Script not found: {zk_script}")
-        logger.warning("Note listing features will be disabled")
-        # Don't fail, just disable the feature
-        zk_script = ""
     
     if link_zathura_tmp_script and not os.path.exists(link_zathura_tmp_script):
         logger.warning(f"Script not found: {link_zathura_tmp_script}")
