@@ -405,12 +405,14 @@ zk-wikilink list-profiles
 zk-wikilink --list-hotkeys
 ```
 
-The wikilink generator provides a highly configurable system for searching notes and inserting properly formatted wikilinks with appropriate aliases. You can define multiple profiles in your configuration file, each with its own specific settings:
+The wikilink generator provides a configurable system for searching notes and inserting properly formatted wikilinks with appropriate aliases. You can define multiple profiles in your configuration file, each with its own specific settings:
 
 1. **Tag filters** - Which notes to include in the search (e.g., "person", "book", "concept")
-2. **Search fields** - Which metadata fields to search when filtering notes
-3. **Display fields** - Which fields to show in the fuzzy finder interface
+2. **Search fields** - Which metadata fields to pass to `fzf` filtering notes
+3. **Display fields** - Which fields to *show* `fzf`
 4. **Alias fields** - Which fields to use for the alias part of wikilinks in priority order
+
+If you run the generator from within `tmux`, it will use `tmux`'s 'send-keys' function to print the wikilink directly into the screen buffer. If it is run from outside `tmux`, the wikilink will be copied to the clipboard. 
 
 Example configuration:
 
@@ -437,7 +439,7 @@ wikilink:
     alias_fields: ["title", "aliases"]
 ```
 
-This tool allows you to create specialized link-insertion tools for any type of note in your system, making it easy to maintain consistent wikilink formatting across your Zettelkasten.
+This tool allows you to create link-insertion tools for any type of note in your system.
 
 
 ### Workout Log
