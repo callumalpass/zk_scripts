@@ -116,7 +116,6 @@ def build_bibview_fzf_manager(
     bibhist: str, 
     library: str, 
     llm_path: str = "", 
-    zk_script: str = "", 
     notes_dir_for_zk: str = "",
     obsidian_socket: str = "", 
     link_zathura_tmp_script: str = "",
@@ -130,7 +129,6 @@ def build_bibview_fzf_manager(
         bibhist: Path to the bibliography history file
         library: Path to the bibliography library directory
         llm_path: Optional path to the LLM script
-        zk_script: Optional path to the ZK script
         notes_dir_for_zk: Optional path to the notes directory for ZK
         obsidian_socket: Optional path to the Obsidian socket
         link_zathura_tmp_script: Optional path to the Zathura tmp script
@@ -443,7 +441,6 @@ def run_viewer(config: Optional[Dict[str, Any]] = None, args: Optional[Any] = No
         bibhist=bibhist,
         library=library,
         llm_path=llm_path,
-        zk_script=zk_script,
         notes_dir_for_zk=notes_dir_for_zk,
         obsidian_socket=obsidian_socket,
         link_zathura_tmp_script=link_zathura_tmp_script,

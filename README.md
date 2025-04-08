@@ -16,11 +16,11 @@ It evolved from a collection of personal scripts into this organized package.
 -   **Query Tools:** Command-line tools for searching your notes by text, tags, and dates.
 -   **Interactive Navigation (Fuzzy Finder):** An interactive interface (built on `fzf`) that lets you quickly navigate your notes, view backlinks, and explore connections. This is a central component for daily use.
 -   **Backlink Tracking:** Uncovers the links between your notes. It supports semantic similarity analysis (using OpenAI embeddings) to find hidden relationships.
+-   **Wikilink Generator:** Create configurable wikilink insertion tools for any type of note (people, books, concepts, etc.) with customizable field display and alias selection.
 
 ### Additional Tools:
 
 -   **Bibliography Management:** Tools for managing references and integrating them with your notes for more academic workflows.
--   **Wikilink Generator:** Create configurable wikilink insertion tools for any type of note (people, books, concepts, etc.) with customizable field display and alias selection.
 -   **Working Memory:** A tool for capturing thoughts and ideas quickly, with smart note creation and organization capabilities.
 -   **Workout Logger:** Track your workouts in markdown. Includes reporting capabilities.
 
@@ -178,7 +178,7 @@ extension: ".markdown"
 
 ### Indexing
 
-The indexer is the engine that powers much of ZK Core. It parses your notes, extracts metadata (like tags and links), and can optionally generate embeddings for semantic search (finding notes based on meaning).
+The indexer is the engine that powers much of ZK Core. It parses your notes, extracts metadata (like tags and links), and can optionally generate embeddings for semantic search (finding and comparing notes based on meaning).
 
 ```bash
 # Build the index

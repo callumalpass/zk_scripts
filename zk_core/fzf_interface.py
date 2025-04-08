@@ -453,7 +453,6 @@ def run_fzf_interface(args) -> None:
     additional_args.extend([
         "--preview", preview_cmd,
         "--preview-window", "wrap:50%:<50(up)",
-        "--color", "16",
         "--ansi"
     ])
     

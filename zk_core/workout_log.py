@@ -1054,12 +1054,19 @@ class UIManager:
         pad_height = max(list_h, len(exercises) + 1)
         pad_width = max_x - 2
         pad = curses.newpad(pad_height, pad_width)
+        first_render = True  # Track first render to only clear screen once
 
         while True:
-            # Clear the pad, not the whole screen.  This avoids flicker.
+            # Only clear the pad, not the whole screen to avoid flicker
             pad.clear()
-            self.clear_screen()  # Clear *only* the main screen once.
-            self.draw_header("Select an Exercise (or / to search)")
+            # Don't clear the screen on every keypress, just the first time
+            if first_render:
+                self.clear_screen()
+                self.draw_header("Select an Exercise (or / to search)")
+                first_render = False
+            else:
+                # Just redraw the header without clearing the screen
+                self.draw_header("Select an Exercise (or / to search)")
 
             header_text = f"{'Title':<{max_x-35}} {'Status':<10} Equipment"
             pad.attron(curses.A_BOLD | curses.color_pair(3))
@@ -1205,6 +1212,7 @@ class UIManager:
                     # Recalculate pad height after search results change.
                     pad_height = max(list_h, len(exercises) + 1)
                     pad = curses.newpad(pad_height, pad_width)
+                    first_render = True  # Need to clear screen for new search results
 
             elif k in (ord('d'), ord('D')):
                 self.show_session_summary_popup(session_exercises)
@@ -1231,11 +1239,17 @@ class UIManager:
         pad_height = max(list_h, len(templates) + 1)
         pad_width = max_x - 2
         pad = curses.newpad(pad_height, pad_width)
+        first_render = True  # Track first render to only clear screen once
 
         while True:
             pad.clear()
-            self.clear_screen()
-            self.draw_header("Select Workout Template")
+            if first_render:
+                self.clear_screen()
+                self.draw_header("Select Workout Template")
+                first_render = False
+            else:
+                # Just redraw the header without clearing the screen
+                self.draw_header("Select Workout Template")
 
             # Draw the template list onto the pad
             for idx, tmpl in enumerate(templates):
