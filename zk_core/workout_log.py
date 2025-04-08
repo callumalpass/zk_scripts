@@ -159,6 +159,8 @@ class DataManager:
         self._exercise_cache: Optional[List[Exercise]] = None
         self._session_cache: Optional[List[WorkoutSession]] = None
         self._template_cache: Optional[List[WorkoutTemplate]] = None
+        self._index_data: Optional[List[Dict[str, Any]]] = None
+        self._index_last_modified: Optional[float] = None
         self.logger = logging.getLogger(__name__)
         self._ensure_files_exist()
         self.logger.debug("DataManager initialized with notes directory: %s", self.notes_dir)
@@ -518,19 +520,33 @@ class DataManager:
             self.logger.exception("Failed to create backup: %s", err)
             return None
 
+    def _load_index_data(self) -> List[Dict[str, Any]]:
+        """Load index data from file with modification check to reduce disk access."""
+        try:
+            if not self.index_file.exists():
+                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
+                return []
+            
+            # Check if file has been modified since last load
+            current_mtime = self.index_file.stat().st_mtime
+            if self._index_data is not None and self._index_last_modified == current_mtime:
+                return self._index_data
+            
+            data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
+            self._index_data = data
+            self._index_last_modified = current_mtime
+            self.logger.debug("Loaded index file with %d entries", len(data))
+            return data
+        except Exception as err:
+            self.logger.error("Error reading index file: %s", err)
+            return []
+
     def load_exercises(self) -> List[Exercise]:
         """Load and return all exercises from the external index (index.json)."""
         if self._exercise_cache is not None:
             return self._exercise_cache
-        try:
-            if not self.index_file.exists():
-                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
-                data = []
-            else:
-                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-        except Exception as err:
-            self.logger.error("Error reading index file: %s", err)
-            data = []
+        
+        data = self._load_index_data()
         exercises = []
         for note in data:
             meta = note.get("extra", note)
@@ -561,15 +577,8 @@ class DataManager:
         """Return a list of all workout sessions from the external index."""
         if self._session_cache is not None:
             return self._session_cache
-        try:
-            if not self.index_file.exists():
-                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
-                data = []
-            else:
-                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-        except Exception as err:
-            self.logger.error("Error reading index file: %s", err)
-            data = []
+        
+        data = self._load_index_data()
         sessions = []
         for note in data:
             meta = note.get("extra", note)
@@ -622,15 +631,8 @@ class DataManager:
         """Load and return all workout templates from the external index."""
         if self._template_cache is not None:
             return self._template_cache
-        try:
-            if not self.index_file.exists():
-                self.logger.warning("Index file %s does not exist. Returning empty list.", self.index_file)
-                data = []
-            else:
-                data = json.loads(self.index_file.read_text(encoding="utf-8")) or []
-        except Exception as err:
-            self.logger.error("Error reading index file: %s", err)
-            data = []
+        
+        data = self._load_index_data()
         templates = []
         for note in data:
             meta = note.get("extra", note)
@@ -664,6 +666,9 @@ class UIManager:
         self.dm.logger.debug("UI Manager initialized.")
         self.history_index = None
         self.menu_history = []  # Stack to store menu states (options, cursor)
+        self._pads = {}  # Cache for pads
+        self._windows = {}  # Cache for windows
+        self._last_refresh = {}  # Track last refresh timestamps for pads/windows
 
     def setup_colors(self) -> None:
         curses.start_color()
@@ -941,14 +946,41 @@ class UIManager:
         self.dm.logger.info("Session recorded with %d exercises", len(session_exercises))
 
     def build_history_index(self) -> dict:
-        """Build and return a history index mapping exercise id to a list of tuples (session date, sets)."""
-        all_sessions = self.dm.list_workout_sessions()
+        """
+        Build and return a history index mapping exercise id to a list of tuples (session date, sets).
+        Uses caching to avoid rebuilding the index unless sessions have changed.
+        """
+        # Check if sessions have changed since we last built the index
+        current_sessions = self.dm.list_workout_sessions()
+        
+        # If history index is already built, check if we need to update
+        if self.history_index is not None:
+            # We'll assume the index is valid unless we have new sessions or a different count
+            needs_update = len(current_sessions) != getattr(self, '_session_count_at_last_index', -1)
+            if not needs_update:
+                # Further check for modified sessions by checking the most recent session's date
+                # This is a simple heuristic that avoids having to compare all sessions
+                if current_sessions and getattr(self, '_last_session_date', None) != current_sessions[0].date:
+                    needs_update = True
+            
+            if not needs_update:
+                return self.history_index
+        
+        # Build or rebuild the history index
         history_index = {}
-        for session in all_sessions:
+        for session in current_sessions:
             for ex in session.exercises:
                 history_index.setdefault(ex.id, []).append((session.date, ex.sets))
+        
+        # Sort the history for each exercise by date (newest first)
         for ex_id in history_index:
             history_index[ex_id].sort(key=lambda item: item[0], reverse=True)
+        
+        # Store metadata to help detect changes next time
+        self._session_count_at_last_index = len(current_sessions)
+        self._last_session_date = current_sessions[0].date if current_sessions else None
+        
+        self.history_index = history_index
         return history_index
 
     def show_exercise_history_popup(self, exercise: Exercise) -> None:
@@ -960,22 +992,67 @@ class UIManager:
         popup_w = min(60, max_x - 4)
         begin_y = (max_y - popup_h) // 2
         begin_x = (max_x - popup_w) // 2
-        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        
+        # Use window caching
+        win = self.get_or_create_window("history_popup", popup_h, popup_w, begin_y, begin_x)
         draw_box(win, f" History for '{exercise.title}' ")
+        
         if not details:
             win.addstr(2, 2, "No session history available.")
         else:
-            row = 2
-            for (sess_date, sets) in details:
-                sets_summary = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
-                line = f"{sess_date}: {sets_summary}"
-                win.addnstr(row, 2, line, popup_w - 4)
-                row += 1
-                if row >= popup_h - 2:
-                    break
-        win.addstr(popup_h - 2, 2, "Press any key to close...")
-        win.refresh()
-        win.getch()
+            # For longer histories, use a pad
+            if len(details) > popup_h - 4:
+                pad_height = len(details) + 2
+                pad_width = popup_w - 4
+                pad = self.get_or_create_pad("history_pad", pad_height, pad_width)
+                pad.clear()
+                
+                for idx, (sess_date, sets) in enumerate(details):
+                    try:
+                        sets_summary = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
+                        line = f"{sess_date}: {sets_summary}"
+                        pad.addnstr(idx, 0, line, pad_width)
+                    except curses.error:
+                        pass
+                
+                win.refresh()
+                
+                # Initial pad display starting row
+                pad_top = 0
+                pad_left = 0
+                self.show_footer("Use UP/DOWN arrows to scroll; any other key to close", 3)
+                
+                # Handle scrolling
+                while True:
+                    try:
+                        pad.refresh(pad_top, pad_left, begin_y + 2, begin_x + 2, 
+                                   begin_y + popup_h - 3, begin_x + popup_w - 3)
+                    except curses.error:
+                        pass
+                    
+                    ch = self.stdscr.getch()
+                    if ch in (curses.KEY_UP, ord('k')):
+                        if pad_top > 0:
+                            pad_top -= 1
+                    elif ch in (curses.KEY_DOWN, ord('j')):
+                        if pad_top < pad_height - (popup_h - 4):
+                            pad_top += 1
+                    else:
+                        break
+            else:
+                # For shorter histories, just use the window directly
+                row = 2
+                for (sess_date, sets) in details:
+                    sets_summary = ", ".join([f"{s.reps}r@{s.weight}" for s in sets])
+                    line = f"{sess_date}: {sets_summary}"
+                    win.addnstr(row, 2, line, popup_w - 4)
+                    row += 1
+                    if row >= popup_h - 2:
+                        break
+                win.addstr(popup_h - 2, 2, "Press any key to close...")
+                win.refresh()
+                self.stdscr.getch()
+        
         self.clear_screen()
         self.draw_header("Select an Exercise (or / to search)")
 
@@ -1001,17 +1078,22 @@ class UIManager:
                 lines.append("")  # Blank line for spacing
 
         # Determine pad height and create pad (subtracting border width)
-        pad_height = len(lines)
+        pad_height = max(len(lines), 1)  # Ensure at least 1 line
         pad_width = popup_w - 2
-        pad = curses.newpad(pad_height, pad_width)
+        
+        # Get or create the summary pad
+        pad = self.get_or_create_pad("session_summary", pad_height, pad_width)
+        
+        # Clear and populate the pad
+        pad.clear()
         for i, line in enumerate(lines):
             try:
                 pad.addstr(i, 0, line)
             except curses.error:
                 pass
 
-        # Create the popup window for the border and title
-        win = curses.newwin(popup_h, popup_w, begin_y, begin_x)
+        # Create or reuse the popup window
+        win = self.get_or_create_window("summary_popup", popup_h, popup_w, begin_y, begin_x)
         draw_box(win, " Session Summary (scrollable) ")
         win.refresh()
 
@@ -1037,6 +1119,34 @@ class UIManager:
         self.clear_screen()
         self.draw_header("Select an Exercise (or / to search)")
 
+    def get_or_create_pad(self, key: str, height: int, width: int) -> Any:
+        """Get a cached pad or create a new one if it doesn't exist or dimensions changed."""
+        if key in self._pads:
+            pad, pad_h, pad_w = self._pads[key]
+            if pad_h >= height and pad_w >= width:
+                pad.clear()  # Clear existing pad
+                return pad
+        
+        # Create new pad if needed
+        pad = curses.newpad(height, width)
+        self._pads[key] = (pad, height, width)
+        self.dm.logger.debug("Created new pad '%s' (%dx%d)", key, height, width)
+        return pad
+    
+    def get_or_create_window(self, key: str, height: int, width: int, y: int, x: int) -> Any:
+        """Get a cached window or create a new one if it doesn't exist or dimensions/position changed."""
+        if key in self._windows:
+            win, win_h, win_w, win_y, win_x = self._windows[key]
+            if win_h == height and win_w == width and win_y == y and win_x == x:
+                win.clear()  # Clear existing window
+                return win
+        
+        # Create new window if needed
+        win = curses.newwin(height, width, y, x)
+        self._windows[key] = (win, height, width, y, x)
+        self.dm.logger.debug("Created new window '%s' (%dx%d at %d,%d)", key, height, width, y, x)
+        return win
+
     def choose_exercise(self, session_exercises: List[Dict[str, Any]], exercises: Optional[List[Exercise]] = None) -> Optional[Exercise]:
         if exercises is None:
             exercises = self.dm.load_exercises()
@@ -1046,19 +1156,20 @@ class UIManager:
         exercises.sort(key=lambda ex: sum(len(sets) for (_, sets) in self.history_index.get(ex.filename, [])), reverse=True)
 
         cursor = 0
-        offset = 0  # This is still useful for initial positioning
         max_y, max_x = self.stdscr.getmaxyx()
         list_h = max_y - 20  # Height of the list area
 
         # Calculate pad dimensions.  +1 is important for scrolling to the last item.
         pad_height = max(list_h, len(exercises) + 1)
         pad_width = max_x - 2
-        pad = curses.newpad(pad_height, pad_width)
+        
+        # Get or create the exercise list pad
+        pad = self.get_or_create_pad("exercise_list", pad_height, pad_width)
+        
         first_render = True  # Track first render to only clear screen once
+        last_selected_idx = -1  # Track last selected exercise to avoid redrawing preview when unnecessary
 
         while True:
-            # Only clear the pad, not the whole screen to avoid flicker
-            pad.clear()
             # Don't clear the screen on every keypress, just the first time
             if first_render:
                 self.clear_screen()
@@ -1073,8 +1184,14 @@ class UIManager:
             pad.addstr(0, 2, header_text[:max_x-4])  # Add header to the pad
             pad.attroff(curses.A_BOLD | curses.color_pair(3))
 
-            # Draw the exercise list onto the pad.
-            for idx, ex in enumerate(exercises):
+            # Only draw visible items plus a buffer (performance optimization)
+            # Calculate which items are visible based on cursor position
+            visible_start = max(0, cursor - list_h)
+            visible_end = min(len(exercises), visible_start + list_h * 2)  # Double the height for buffer
+            
+            # Draw only the visible section of exercises
+            for idx in range(visible_start, visible_end):
+                ex = exercises[idx]
                 status = "Planned" if ex.planned else ""
                 equip = ", ".join(ex.equipment) if isinstance(ex.equipment, list) else str(ex.equipment or "")
                 line = f"{ex.title:<{max_x-35}} {status:<10} {equip}"
@@ -1088,11 +1205,13 @@ class UIManager:
                     pad.addstr(row, 2, line[:max_x-4])
 
             # --- PREVIEW WINDOW (Draw this *outside* the pad loop) ---
-            preview_h = 18
-            preview_win = curses.newwin(preview_h, max_x-2, max_y - preview_h - 2, 1)
-            draw_box(preview_win, " Preview ")
+            # Only redraw the preview if the selected exercise has changed
+            if exercises and (cursor != last_selected_idx):
+                last_selected_idx = cursor
+                preview_h = 18
+                preview_win = self.get_or_create_window("preview", preview_h, max_x-2, max_y - preview_h - 2, 1)
+                draw_box(preview_win, " Preview ")
 
-            if exercises: # Handle empty exercise list
                 selected = exercises[cursor]
                 preview_win.addstr(1, 2, f"Title: {selected.title}")
                 equip = ", ".join(selected.equipment) if isinstance(selected.equipment, list) else str(selected.equipment or "")
@@ -1164,7 +1283,7 @@ class UIManager:
                 else:
                     preview_win.addstr(summary_line, 4, "(none)")
 
-            preview_win.refresh()  # Refresh the preview window
+                preview_win.refresh()  # Refresh the preview window
 
             # --- KEY HANDLING & DISPLAY ---
             key_hint = ("↑/↓: Move | Enter: Select | P: Toggle Planned | " +
@@ -1182,8 +1301,6 @@ class UIManager:
                 pad.refresh(pad_top, 0, 2, 1, list_h - 1, max_x - 2)
             except curses.error:
                 pass  # Ignore errors during refresh (can happen at boundaries)
-
-            self.stdscr.refresh() # Refresh main screen after pad
 
             k = self.stdscr.getch()
             if k in (curses.KEY_UP, ord('k')):
@@ -1514,7 +1631,7 @@ class UIManager:
                 y = 3 + idx
                 # Display with columns
                 title_str = f"{ex.title:<{col_widths[0]}}"
-                equipment_str = f"{', '.join(ex.equipment):<{col_widths[1]}}"
+                equipment_str = f"{', '.join(ex.equipment) if isinstance(ex.equipment, list) else str(ex.equipment or ""):<{col_widths[1]}}"
                 planned_str = f"{'Yes' if ex.planned else 'No':<{col_widths[2]}}"
                 line = f"{title_str}  {equipment_str}  {planned_str}"
 
