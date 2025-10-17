@@ -117,6 +117,9 @@ def get_cached_notes(ctx: typer.Context, index_file: Path) -> List[Note]:
         tag_index = {}
         for note in ctx.obj['notes_cache'][cache_key]:
             for tag in note.tags:
+                # Skip None tags
+                if tag is None:
+                    continue
                 if tag not in tag_index:
                     tag_index[tag] = []
                 tag_index[tag].append(note)
@@ -221,7 +224,8 @@ def filter_by_tag_optimized(ctx: typer.Context, index_file: Path, tags: List[str
                 # Hierarchical match (note tag starts with ex_tag/)
                 ex_prefix = f"{ex_tag}/"
                 for note_tag in note_tags:
-                    if note_tag.startswith(ex_prefix):
+                    # Skip None tags
+                    if note_tag is not None and note_tag.startswith(ex_prefix):
                         exclude_this_note = True
                         break
                 if exclude_this_note:
@@ -243,17 +247,18 @@ def filter_by_tag(notes: List[Note], tags: List[str], tag_mode: str = 'and', exc
     exclude_set = set(exclude_tags) if exclude_tags else set()
     
     for note in notes:
-        note_tags = set(note.tags)
-        
+        # Filter out None tags
+        note_tags = set(tag for tag in note.tags if tag is not None)
+
         # Skip early if we're excluding tags and any match
         if exclude_set and exclude_set.intersection(note_tags):
             continue
-        
+
         # Check tag inclusion based on mode
         if not filter_tags:  # No tags to filter on, only exclusions
             filtered_notes.append(note)
             continue
-            
+
         if tag_mode == 'or':
             include = any(any(nt == ft or nt.startswith(ft + '/') for nt in note_tags) for ft in filter_tags)
         else:  # default to 'and'
