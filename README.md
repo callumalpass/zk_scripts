@@ -22,7 +22,6 @@ It evolved from a collection of personal scripts into this organized package.
 
 -   **Bibliography Management:** Tools for managing references and integrating them with your notes for more academic workflows.
 -   **Working Memory:** A tool for capturing thoughts and ideas quickly, with smart note creation and organization capabilities.
--   **Workout Logger:** Track your workouts in markdown. Includes reporting capabilities.
 
 ### Limitations
 
@@ -136,7 +135,7 @@ filename:
 
 ### Filename Configuration
 
-The `filename` section allows you to customize how new note filenames are generated. This applies to notes created by the working memory tool, workout logger, and other tools that create new files.
+The `filename` section allows you to customize how new note filenames are generated. This applies to notes created by the working memory tool and other tools that create new files.
 
 The format supports:
 
@@ -441,90 +440,6 @@ wikilink:
 
 This tool allows you to create link-insertion tools for any type of note in your system.
 
-
-### Workout Log
-
-```bash
-# Launch the interactive workout tracker TUI
-zk-workout-log
-
-# Export your workout history as CSV
-zk-workout-log --export-history
-
-# Export your workout history as JSON
-zk-workout-log --export-json
-```
-
-The workout log is a comprehensive workout tracking system built around markdown files, integrated with your Zettelkasten. It features:
-
-- **Interactive TUI Interface**: A full-featured terminal user interface with menus for all operations
-- **Workout Session Recording**: Log exercises with sets, reps, and weights during your workout
-- **Exercise Management**: Create, edit, and organize your personal exercise library
-- **Workout Templates**: Save and reuse workout routines for quick session starts
-- **History & Statistics**: Review past workouts with detailed breakdowns by exercise
-- **Data Analysis**: View your progress with statistics on total sets, reps, and weights
-- **Export Capabilities**: Export your workout data to CSV or JSON for external analysis
-- **Fully Integrated**: All data is stored as markdown files in your notes directory
-
-#### File Types
-
-The workout log uses three types of markdown files, each with specific YAML frontmatter:
-
-1. **Exercise Files**: Define individual exercises
-   ```yaml
-   ---
-   title: "Bench Press"
-   tags: ["exercise"]
-   date: "2023-01-01"
-   dateCreated: "2023-01-01T10:00"
-   dateModified: "2023-01-01T10:00"
-   planned_exercise: false
-   exercise_equipment: ["barbell"]
-   ---
-   ```
-
-2. **Workout Session Files**: Record completed workout sessions
-   ```yaml
-   ---
-   zettelid: "230101abc"
-   title: "Workout Session on 2023-01-01"
-   tags: ["workout"]
-   date: "2023-01-01"
-   dateCreated: "2023-01-01T18:30"
-   dateModified: "2023-01-01T18:30"
-   exercises:
-     - id: "220915xyz.md"
-       title: "Bench Press"
-       sets:
-         - reps: 10
-           weight: 135
-         - reps: 8
-           weight: 155
-     # Additional exercises...
-   ---
-   ```
-
-3. **Workout Template Files**: Define reusable workout routines
-   ```yaml
-   ---
-   title: "Push Day"
-   description: "Chest, shoulders, and triceps"
-   date: "2023-01-01"
-   dateCreated: "2023-01-01T09:00"
-   dateModified: "2023-01-01T09:00"
-   exercises:
-     - exercise_filename: "220915xyz.md"
-       order: 1
-     # Additional exercises...
-   tags: ["workout_template"]
-   ---
-   # Push Day
-
-   Chest, shoulders, and triceps
-   ```
-
-The system reads from your main index file (created by `zk-index`) for optimal performance but writes new entries directly as markdown files, keeping all your workout data in your Zettelkasten system.
-
 ## Project Structure
 
 ```
@@ -550,8 +465,7 @@ zk_core/
 │   ├── __init__.py
 │   ├── builder.py
 │   └── viewer.py
-├── wikilink_generator.py
-└── workout_log.py
+└── wikilink_generator.py
 ```
 
 ### Core Modules
