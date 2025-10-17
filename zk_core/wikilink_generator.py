@@ -145,13 +145,14 @@ def create_wikilink_from_selection(
 
     # Get additional fields for the selected note
     try:
-        from typer.testing import CliRunner
-        runner = CliRunner()
-
-        # Create a list of all fields we might need
-        all_fields = list(set(config.alias_fields))
+        # Create a list of all fields we might need (preserve order from config)
+        all_fields = []
+        for field in config.alias_fields:
+            if field not in all_fields:
+                all_fields.append(field)
 
         fields_args = [
+            "zk-query",
             "list",
             "--mode", "notes",
             "-i", "index.json",
@@ -165,11 +166,19 @@ def create_wikilink_from_selection(
         if debug:
             logger.debug(f"Running fields command with args: {' '.join(fields_args)}")
 
-        # Run the query with stdin input
-        result = runner.invoke(query_app, fields_args, input=filename, catch_exceptions=False)
+        # Run the query with stdin input using subprocess
+        result = subprocess.run(
+            fields_args,
+            input=filename + "\n",
+            capture_output=True,
+            text=True,
+            cwd=notes_dir
+        )
 
-        if result.exit_code != 0:
-            logger.error(f"Error getting fields: Exit code {result.exit_code}")
+        if result.returncode != 0:
+            logger.error(f"Error getting fields: Exit code {result.returncode}")
+            if debug:
+                logger.debug(f"stderr: {result.stderr}")
             return f"[[{filename}]]"  # Fallback to basic wikilink
 
         fields_output = result.stdout.strip()
